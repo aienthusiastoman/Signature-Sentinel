@@ -70,9 +70,9 @@ export default function VerificationDetail() {
               <div className={`text-6xl font-bold ${score >= 70 ? "text-green-600 dark:text-green-400" : score >= 40 ? "text-yellow-600 dark:text-yellow-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-confidence-score">
                 {score.toFixed(1)}%
               </div>
-              <p className="text-muted-foreground mt-2">
+              <div className="text-muted-foreground mt-2">
                 Match Mode: <Badge variant="secondary">{resultData?.matchMode}</Badge>
-              </p>
+              </div>
               <Progress value={score} className="mt-4 max-w-md mx-auto" />
             </div>
 

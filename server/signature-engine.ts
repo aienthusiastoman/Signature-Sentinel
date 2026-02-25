@@ -500,33 +500,72 @@ async function grayToBase64Png(data: Uint8Array, width: number, height: number):
   return `data:image/png;base64,${buffer.toString("base64")}`;
 }
 
+async function getPdfPageSize(pdfBuffer: Buffer): Promise<{ width: number; height: number }> {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "sigverify-"));
+  const pdfPath = path.join(tmpDir, "input.pdf");
+  try {
+    await writeFile(pdfPath, pdfBuffer);
+    const { stdout } = await execFileAsync("pdfinfo", [pdfPath]);
+    const sizeMatch = stdout.match(/Page size:\s+([\d.]+)\s+x\s+([\d.]+)/);
+    if (sizeMatch) {
+      return { width: parseFloat(sizeMatch[1]), height: parseFloat(sizeMatch[2]) };
+    }
+    return { width: 612, height: 792 };
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function extractCandidatesFromPdf(
   pdfBuffer: Buffer,
   slot: number,
   regions: MaskRegion[],
   dpi: number
-): Promise<SignatureCandidate[]> {
+): Promise<{ candidates: SignatureCandidate[]; cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] }> {
   const slotRegions = regions.filter(r => r.fileSlot === slot);
-  if (slotRegions.length === 0) return [];
+  if (slotRegions.length === 0) return { candidates: [], cropImages: [] };
 
   const pages = await pdfToImages(pdfBuffer, dpi);
   const candidates: SignatureCandidate[] = [];
+  const cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
+
+  const pageSize = await getPdfPageSize(pdfBuffer);
+  const previewRenderDpi = 150;
+  const previewMaxWidth = 800;
+  const previewRenderWidth = pageSize.width * previewRenderDpi / 72;
+  const previewScale = previewRenderWidth > previewMaxWidth ? previewMaxWidth / previewRenderWidth : 1;
+  const previewWidth = previewRenderWidth * previewScale;
+  const previewHeight = (pageSize.height * previewRenderDpi / 72) * previewScale;
 
   for (const pageData of pages) {
+    const scaleX = pageData.width / previewWidth;
+    const scaleY = pageData.height / previewHeight;
+
     for (const region of slotRegions) {
-      const scaleFactor = dpi / 72;
+      if (region.pageNumber !== pageData.page) continue;
+
       const scaledRegion = {
         ...region,
-        x: region.x * scaleFactor,
-        y: region.y * scaleFactor,
-        width: region.width * scaleFactor,
-        height: region.height * scaleFactor,
+        x: region.x * scaleX,
+        y: region.y * scaleY,
+        width: region.width * scaleX,
+        height: region.height * scaleY,
       };
 
       const cropped = cropRegion(pageData.data, pageData.width, pageData.height, scaledRegion);
       if (cropped.width === 0 || cropped.height === 0) continue;
 
+      cropImages.push({
+        slot,
+        page: pageData.page,
+        imageData: cropped.data,
+        width: cropped.width,
+        height: cropped.height,
+      });
+
       const strokes = extractSignatureStrokes(cropped.data, cropped.width, cropped.height);
+
+      console.log(`[engine] slot=${slot} page=${pageData.page} pageImg=${pageData.width}x${pageData.height} preview=${Math.round(previewWidth)}x${Math.round(previewHeight)} scale=${scaleX.toFixed(2)},${scaleY.toFixed(2)} region=(${Math.round(scaledRegion.x)},${Math.round(scaledRegion.y)},${Math.round(scaledRegion.width)}x${Math.round(scaledRegion.height)}) crop=${cropped.width}x${cropped.height} strokes=${strokes ? "yes" : "no"}`);
 
       if (strokes) {
         candidates.push({
@@ -540,7 +579,7 @@ async function extractCandidatesFromPdf(
     }
   }
 
-  return candidates;
+  return { candidates, cropImages };
 }
 
 export async function verifySignatures(
@@ -550,16 +589,18 @@ export async function verifySignatures(
   dpi: number = 200
 ): Promise<VerificationOutput> {
   const allCandidates = new Map<number, SignatureCandidate[]>();
+  const allCropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
 
   for (const [slot, buffer] of fileBuffers) {
-    const candidates = await extractCandidatesFromPdf(buffer, slot, regions, dpi);
+    const { candidates, cropImages } = await extractCandidatesFromPdf(buffer, slot, regions, dpi);
     allCandidates.set(slot, candidates);
+    allCropImages.push(...cropImages);
   }
 
   const slots = Array.from(allCandidates.keys()).sort((a, b) => a - b);
   const comparisons: ComparisonResult[] = [];
   let bestScore = 0;
-  let bestPair: { slot1: number; slot2: number; page1: number; page2: number; norm1: any; norm2: any } | null = null;
+  let bestPair: { slot1: number; slot2: number; page1: number; page2: number } | null = null;
 
   for (let i = 0; i < slots.length; i++) {
     for (let j = i + 1; j < slots.length; j++) {
@@ -570,7 +611,7 @@ export async function verifySignatures(
 
       for (const c1 of cands1) {
         for (const c2 of cands2) {
-          const { score: rawScore, norm1, norm2 } = curveSimilarity(
+          const { score: rawScore } = curveSimilarity(
             c1.pixels, c1.width, c1.height,
             c2.pixels, c2.width, c2.height
           );
@@ -585,9 +626,9 @@ export async function verifySignatures(
             adjustedScore: Math.round(adjustedScore * 100) / 100,
           });
 
-          if (adjustedScore > bestScore && norm1 && norm2) {
+          if (adjustedScore > bestScore) {
             bestScore = adjustedScore;
-            bestPair = { slot1: s1, slot2: s2, page1: c1.pageNumber, page2: c2.pageNumber, norm1, norm2 };
+            bestPair = { slot1: s1, slot2: s2, page1: c1.pageNumber, page2: c2.pageNumber };
           }
         }
       }
@@ -596,9 +637,11 @@ export async function verifySignatures(
 
   const signatureImages: Record<string, string> = {};
 
-  if (bestPair) {
-    signatureImages[`slot${bestPair.slot1}`] = await grayToBase64Png(bestPair.norm1.data, bestPair.norm1.width, bestPair.norm1.height);
-    signatureImages[`slot${bestPair.slot2}`] = await grayToBase64Png(bestPair.norm2.data, bestPair.norm2.width, bestPair.norm2.height);
+  for (const crop of allCropImages) {
+    const key = `slot${crop.slot}`;
+    if (!signatureImages[key]) {
+      signatureImages[key] = await grayToBase64Png(crop.imageData, crop.width, crop.height);
+    }
   }
 
   return {

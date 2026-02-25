@@ -149,12 +149,17 @@ export async function registerRoutes(
         fileNames[`slot${slot}`] = file.originalname;
       }
 
+      console.log("[verify] template maskRegions:", JSON.stringify(template.maskRegions));
+      console.log("[verify] fileSlotCount:", fileSlotCount, "dpi:", template.dpi || 200);
+
       const result = await verifySignatures(
         fileBuffers,
         template.maskRegions,
         template.matchMode,
         template.dpi || 200
       );
+
+      console.log("[verify] result:", JSON.stringify({ confidenceScore: result.confidenceScore, comparisons: result.comparisons.length, hasImages: !!result.signatureImages }));
 
       const verification = await storage.createVerification({
         templateId,
