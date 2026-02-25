@@ -377,7 +377,6 @@ function isSignatureLike(data: Uint8Array, width: number, height: number): boole
       if (data[y * width + x] > 0) totalForeground++;
       if (data[y * width + x] > 0 && visited[y * width + x] === 0) {
         let area = 0;
-        let compMinX = width, compMaxX = 0, compMinY = height, compMaxY = 0;
         const stack = [[x, y]];
         while (stack.length > 0) {
           const [cx, cy] = stack.pop()!;
@@ -386,10 +385,6 @@ function isSignatureLike(data: Uint8Array, width: number, height: number): boole
           if (data[idx] === 0 || visited[idx] !== 0) continue;
           visited[idx] = 1;
           area++;
-          compMinX = Math.min(compMinX, cx);
-          compMaxX = Math.max(compMaxX, cx);
-          compMinY = Math.min(compMinY, cy);
-          compMaxY = Math.max(compMaxY, cy);
           stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
         }
         if (area > 5) {
@@ -404,7 +399,6 @@ function isSignatureLike(data: Uint8Array, width: number, height: number): boole
   componentSizes.sort((a, b) => b - a);
   const largestSize = componentSizes[0];
   const dominanceRatio = largestSize / totalForeground;
-
   const inkDensity = totalForeground / (width * height);
 
   const rowCounts = new Float64Array(height);
@@ -413,30 +407,89 @@ function isSignatureLike(data: Uint8Array, width: number, height: number): boole
       if (data[y * width + x] > 0) rowCounts[y]++;
     }
   }
+
   let nonEmptyRows = 0;
   for (let y = 0; y < height; y++) {
     if (rowCounts[y] > 0) nonEmptyRows++;
   }
   const rowSpread = nonEmptyRows / height;
 
-  console.log(`[engine] isSignatureLike: components=${componentSizes.length} largest=${largestSize} totalFg=${totalForeground} dominance=${dominanceRatio.toFixed(3)} inkDensity=${inkDensity.toFixed(4)} rowSpread=${rowSpread.toFixed(3)}`);
+  const textBands = detectTextBands(rowCounts, height, width);
 
-  if (dominanceRatio < 0.25) {
-    console.log(`[engine] rejected: too many scattered components (dominance=${dominanceRatio.toFixed(3)} < 0.25)`);
+  console.log(`[engine] isSignatureLike: components=${componentSizes.length} largest=${largestSize} totalFg=${totalForeground} dominance=${dominanceRatio.toFixed(3)} inkDensity=${inkDensity.toFixed(4)} rowSpread=${rowSpread.toFixed(3)} textBands=${textBands}`);
+
+  if (textBands >= 2) {
+    console.log(`[engine] rejected: detected ${textBands} text bands (printed text pattern)`);
     return false;
   }
 
-  if (inkDensity > 0.15) {
-    console.log(`[engine] rejected: too dense, likely text (density=${inkDensity.toFixed(4)} > 0.15)`);
+  if (dominanceRatio < 0.20) {
+    console.log(`[engine] rejected: too many scattered components (dominance=${dominanceRatio.toFixed(3)} < 0.20)`);
     return false;
   }
 
-  if (componentSizes.length > 30 && dominanceRatio < 0.40) {
+  if (inkDensity > 0.12) {
+    console.log(`[engine] rejected: too dense, likely text (density=${inkDensity.toFixed(4)} > 0.12)`);
+    return false;
+  }
+
+  if (componentSizes.length > 20 && dominanceRatio < 0.35) {
     console.log(`[engine] rejected: many components with low dominance (${componentSizes.length} components, dominance=${dominanceRatio.toFixed(3)})`);
     return false;
   }
 
   return true;
+}
+
+function detectTextBands(rowCounts: Float64Array, height: number, width: number): number {
+  const threshold = width * 0.02;
+
+  const bands: { start: number; end: number }[] = [];
+  let inBand = false;
+  let bandStart = 0;
+  for (let y = 0; y < height; y++) {
+    if (rowCounts[y] > threshold) {
+      if (!inBand) {
+        bandStart = y;
+        inBand = true;
+      }
+    } else {
+      if (inBand) {
+        const bandHeight = y - bandStart;
+        if (bandHeight >= 3) {
+          bands.push({ start: bandStart, end: y });
+        }
+        inBand = false;
+      }
+    }
+  }
+  if (inBand) {
+    const bandHeight = height - bandStart;
+    if (bandHeight >= 3) {
+      bands.push({ start: bandStart, end: height });
+    }
+  }
+
+  if (bands.length < 2) return bands.length;
+
+  let regularGaps = 0;
+  const gaps: number[] = [];
+  for (let i = 1; i < bands.length; i++) {
+    gaps.push(bands[i].start - bands[i - 1].end);
+  }
+
+  if (gaps.length >= 2) {
+    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    for (const g of gaps) {
+      if (avgGap > 0 && Math.abs(g - avgGap) / avgGap < 0.5) {
+        regularGaps++;
+      }
+    }
+  }
+
+  console.log(`[engine] detectTextBands: bands=${bands.length} gaps=[${gaps.join(",")}] regularGaps=${regularGaps}`);
+
+  return bands.length;
 }
 
 function extractSignatureStrokes(data: Uint8Array, width: number, height: number): Uint8Array | null {
