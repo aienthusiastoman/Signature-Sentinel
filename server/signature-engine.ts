@@ -367,6 +367,78 @@ function findLargestComponent(data: Uint8Array, width: number, height: number): 
   return result;
 }
 
+function isSignatureLike(data: Uint8Array, width: number, height: number): boolean {
+  const visited = new Uint8Array(width * height);
+  const componentSizes: number[] = [];
+  let totalForeground = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[y * width + x] > 0) totalForeground++;
+      if (data[y * width + x] > 0 && visited[y * width + x] === 0) {
+        let area = 0;
+        let compMinX = width, compMaxX = 0, compMinY = height, compMaxY = 0;
+        const stack = [[x, y]];
+        while (stack.length > 0) {
+          const [cx, cy] = stack.pop()!;
+          if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
+          const idx = cy * width + cx;
+          if (data[idx] === 0 || visited[idx] !== 0) continue;
+          visited[idx] = 1;
+          area++;
+          compMinX = Math.min(compMinX, cx);
+          compMaxX = Math.max(compMaxX, cx);
+          compMinY = Math.min(compMinY, cy);
+          compMaxY = Math.max(compMaxY, cy);
+          stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+        }
+        if (area > 5) {
+          componentSizes.push(area);
+        }
+      }
+    }
+  }
+
+  if (componentSizes.length === 0 || totalForeground === 0) return false;
+
+  componentSizes.sort((a, b) => b - a);
+  const largestSize = componentSizes[0];
+  const dominanceRatio = largestSize / totalForeground;
+
+  const inkDensity = totalForeground / (width * height);
+
+  const rowCounts = new Float64Array(height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[y * width + x] > 0) rowCounts[y]++;
+    }
+  }
+  let nonEmptyRows = 0;
+  for (let y = 0; y < height; y++) {
+    if (rowCounts[y] > 0) nonEmptyRows++;
+  }
+  const rowSpread = nonEmptyRows / height;
+
+  console.log(`[engine] isSignatureLike: components=${componentSizes.length} largest=${largestSize} totalFg=${totalForeground} dominance=${dominanceRatio.toFixed(3)} inkDensity=${inkDensity.toFixed(4)} rowSpread=${rowSpread.toFixed(3)}`);
+
+  if (dominanceRatio < 0.25) {
+    console.log(`[engine] rejected: too many scattered components (dominance=${dominanceRatio.toFixed(3)} < 0.25)`);
+    return false;
+  }
+
+  if (inkDensity > 0.15) {
+    console.log(`[engine] rejected: too dense, likely text (density=${inkDensity.toFixed(4)} > 0.15)`);
+    return false;
+  }
+
+  if (componentSizes.length > 30 && dominanceRatio < 0.40) {
+    console.log(`[engine] rejected: many components with low dominance (${componentSizes.length} components, dominance=${dominanceRatio.toFixed(3)})`);
+    return false;
+  }
+
+  return true;
+}
+
 function extractSignatureStrokes(data: Uint8Array, width: number, height: number): Uint8Array | null {
   if (!data || data.length === 0) return null;
 
@@ -377,6 +449,10 @@ function extractSignatureStrokes(data: Uint8Array, width: number, height: number
 
   const minArea = Math.max(30, Math.floor(width * height * 0.0005));
   const smallRemoved = removeSmallComponents(linesRemoved, width, height, minArea);
+
+  if (!isSignatureLike(smallRemoved, width, height)) {
+    return null;
+  }
 
   return findLargestComponent(smallRemoved, width, height);
 }
