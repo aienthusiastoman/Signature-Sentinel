@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { MaskRegion } from "@shared/schema";
+import { createCanvas, Image } from "canvas";
 
 const DEFAULT_DPI = 200;
 
@@ -26,10 +27,39 @@ export interface VerificationOutput {
   signature2Image?: string;
 }
 
+class NodeCanvasFactory {
+  create(width: number, height: number) {
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext("2d");
+    return { canvas, context };
+  }
+
+  reset(canvasAndContext: any, width: number, height: number) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+
+  destroy(canvasAndContext: any) {
+    canvasAndContext.canvas.width = 0;
+    canvasAndContext.canvas.height = 0;
+    canvasAndContext.canvas = null;
+    canvasAndContext.context = null;
+  }
+}
+
+function getDocOptions(pdfBuffer: Buffer) {
+  return {
+    data: new Uint8Array(pdfBuffer),
+    useSystemFonts: true,
+    canvasFactory: new NodeCanvasFactory() as any,
+    isOffscreenCanvasSupported: false,
+  };
+}
+
 async function pdfPageToImage(pdfBuffer: Buffer, pageNumber: number, dpi: number): Promise<{ data: Uint8Array; width: number; height: number }> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer), useSystemFonts: true });
+  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
   const doc = await loadingTask.promise;
 
   if (pageNumber > doc.numPages) {
@@ -42,9 +72,8 @@ async function pdfPageToImage(pdfBuffer: Buffer, pageNumber: number, dpi: number
   const width = Math.floor(viewport.width);
   const height = Math.floor(viewport.height);
 
-  const { createCanvas } = await import("canvas");
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
+  const canvasFactory = new NodeCanvasFactory();
+  const { canvas, context: ctx } = canvasFactory.create(width, height);
 
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, width, height);
@@ -52,6 +81,7 @@ async function pdfPageToImage(pdfBuffer: Buffer, pageNumber: number, dpi: number
   await page.render({
     canvasContext: ctx as any,
     viewport: viewport,
+    canvasFactory: canvasFactory as any,
   }).promise;
 
   const imageData = ctx.getImageData(0, 0, width, height);
@@ -79,7 +109,7 @@ export async function getPdfPageCount(pdfBuffer: Buffer): Promise<number> {
 
 export async function renderPdfPage(pdfBuffer: Buffer, pageNumber: number, maxWidth: number = 800): Promise<Buffer> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer), useSystemFonts: true });
+  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
   const doc = await loadingTask.promise;
   const page = await doc.getPage(pageNumber);
 
@@ -90,9 +120,8 @@ export async function renderPdfPage(pdfBuffer: Buffer, pageNumber: number, maxWi
   const width = Math.floor(viewport.width);
   const height = Math.floor(viewport.height);
 
-  const { createCanvas } = await import("canvas");
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
+  const canvasFactory = new NodeCanvasFactory();
+  const { canvas, context: ctx } = canvasFactory.create(width, height);
 
   ctx.fillStyle = "white";
   ctx.fillRect(0, 0, width, height);
@@ -100,6 +129,7 @@ export async function renderPdfPage(pdfBuffer: Buffer, pageNumber: number, maxWi
   await page.render({
     canvasContext: ctx as any,
     viewport: viewport,
+    canvasFactory: canvasFactory as any,
   }).promise;
 
   const pngBuffer = canvas.toBuffer("image/png");
@@ -478,7 +508,7 @@ async function extractCandidatesFromPdf(
   dpi: number
 ): Promise<SignatureCandidate[]> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer), useSystemFonts: true });
+  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
   const doc = await loadingTask.promise;
   const candidates: SignatureCandidate[] = [];
 
@@ -489,14 +519,13 @@ async function extractCandidatesFromPdf(
       const width = Math.floor(viewport.width);
       const height = Math.floor(viewport.height);
 
-      const { createCanvas } = await import("canvas");
-      const canvas = createCanvas(width, height);
-      const ctx = canvas.getContext("2d");
+      const canvasFactory = new NodeCanvasFactory();
+      const { canvas, context: ctx } = canvasFactory.create(width, height);
 
       ctx.fillStyle = "white";
       ctx.fillRect(0, 0, width, height);
 
-      await page.render({ canvasContext: ctx as any, viewport }).promise;
+      await page.render({ canvasContext: ctx as any, viewport, canvasFactory: canvasFactory as any }).promise;
 
       const imageData = ctx.getImageData(0, 0, width, height);
       const grayData = new Uint8Array(width * height);
