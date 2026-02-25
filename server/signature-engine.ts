@@ -541,13 +541,11 @@ async function extractCandidatesFromPdf(
   const fallbackPreviewWidth = fallbackRenderWidth * fallbackScale;
   const fallbackPreviewHeight = (fallbackPageSize.height * previewRenderDpi / 72) * fallbackScale;
 
-  for (const pageData of pages) {
+  for (const region of slotRegions) {
+    const previewWidth = region.canvasWidth || fallbackPreviewWidth;
+    const previewHeight = region.canvasHeight || fallbackPreviewHeight;
 
-    for (const region of slotRegions) {
-      if (region.pageNumber !== pageData.page) continue;
-
-      const previewWidth = region.canvasWidth || fallbackPreviewWidth;
-      const previewHeight = region.canvasHeight || fallbackPreviewHeight;
+    for (const pageData of pages) {
       const scaleX = pageData.width / previewWidth;
       const scaleY = pageData.height / previewHeight;
 
