@@ -373,11 +373,8 @@ function extractSignatureStrokes(data: Uint8Array, width: number, height: number
 
   const linesRemoved = removeLines(thresh, width, height);
 
-  const openRadius = Math.max(1, Math.floor(Math.min(width, height) / 200));
-  const opened = morphOpen(linesRemoved, width, height, openRadius);
-
-  const minArea = Math.max(50, Math.floor(width * height * 0.001));
-  const smallRemoved = removeSmallComponents(opened, width, height, minArea);
+  const minArea = Math.max(30, Math.floor(width * height * 0.0005));
+  const smallRemoved = removeSmallComponents(linesRemoved, width, height, minArea);
 
   return findLargestComponent(smallRemoved, width, height);
 }
