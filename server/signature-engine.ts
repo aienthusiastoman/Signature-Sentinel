@@ -56,11 +56,21 @@ async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data
 
     for (let i = 1; i <= pageCount; i++) {
       const pageSuffix = pageCount > 9 ? String(i).padStart(String(pageCount).length, "0") : String(i);
-      const imgPath = path.join(tmpDir, `page-${pageSuffix}.png`);
+      let imgPath = path.join(tmpDir, `page-${pageSuffix}.png`);
+
+      try {
+        await readFile(imgPath);
+      } catch {
+        if (pageCount === 1) {
+          imgPath = path.join(tmpDir, `page.png`);
+        } else {
+          console.log(`[engine] page ${i} image not found at expected path, skipping`);
+          continue;
+        }
+      }
 
       try {
         const imgBuffer = await readFile(imgPath);
-        const metadata = await sharp(imgBuffer).metadata();
         const { data, info } = await sharp(imgBuffer)
           .grayscale()
           .raw()
@@ -72,8 +82,8 @@ async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data
           height: info.height,
           page: i,
         });
-      } catch {
-        // page image not found, skip
+      } catch (e: any) {
+        console.log(`[engine] failed to read page ${i}: ${e.message}`);
       }
     }
 
@@ -188,8 +198,8 @@ function adaptiveThreshold(data: Uint8Array, width: number, height: number, bloc
 function removeLines(data: Uint8Array, width: number, height: number): Uint8Array {
   const result = new Uint8Array(data);
 
-  const hThreshold = Math.max(80, Math.floor(width * 0.3));
-  const vThreshold = Math.max(80, Math.floor(height * 0.3));
+  const hThreshold = Math.max(40, Math.floor(width * 0.12));
+  const vThreshold = Math.max(40, Math.floor(height * 0.12));
 
   for (let y = 0; y < height; y++) {
     let runStart = -1;
@@ -197,7 +207,17 @@ function removeLines(data: Uint8Array, width: number, height: number): Uint8Arra
       const val = x < width ? data[y * width + x] : 0;
       if (val > 0 && runStart < 0) runStart = x;
       if (val === 0 && runStart >= 0) {
-        if (x - runStart > hThreshold) {
+        const runLen = x - runStart;
+        let runHeight = 0;
+        for (let rx = runStart; rx < x; rx++) {
+          let vertCount = 0;
+          for (let dy = -2; dy <= 2; dy++) {
+            const ny = y + dy;
+            if (ny >= 0 && ny < height && data[ny * width + rx] > 0) vertCount++;
+          }
+          if (vertCount > runHeight) runHeight = vertCount;
+        }
+        if (runLen > hThreshold && runHeight <= 3) {
           for (let rx = runStart; rx < x; rx++) result[y * width + rx] = 0;
         }
         runStart = -1;
@@ -211,10 +231,92 @@ function removeLines(data: Uint8Array, width: number, height: number): Uint8Arra
       const val = y < height ? result[y * width + x] : 0;
       if (val > 0 && runStart < 0) runStart = y;
       if (val === 0 && runStart >= 0) {
-        if (y - runStart > vThreshold) {
+        const runLen = y - runStart;
+        let runWidth = 0;
+        for (let ry = runStart; ry < y; ry++) {
+          let horizCount = 0;
+          for (let dx = -2; dx <= 2; dx++) {
+            const nx = x + dx;
+            if (nx >= 0 && nx < width && result[ry * width + nx] > 0) horizCount++;
+          }
+          if (horizCount > runWidth) runWidth = horizCount;
+        }
+        if (runLen > vThreshold && runWidth <= 3) {
           for (let ry = runStart; ry < y; ry++) result[ry * width + x] = 0;
         }
         runStart = -1;
+      }
+    }
+  }
+
+  return result;
+}
+
+function morphOpen(data: Uint8Array, width: number, height: number, radius: number = 1): Uint8Array {
+  const eroded = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let allSet = true;
+      outer:
+      for (let dy = -radius; dy <= radius && allSet; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height || data[ny * width + nx] === 0) {
+            allSet = false;
+            break outer;
+          }
+        }
+      }
+      eroded[y * width + x] = allSet ? 255 : 0;
+    }
+  }
+
+  const dilated = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let anySet = false;
+      outer2:
+      for (let dy = -radius; dy <= radius && !anySet; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height && eroded[ny * width + nx] > 0) {
+            anySet = true;
+            break outer2;
+          }
+        }
+      }
+      dilated[y * width + x] = anySet ? 255 : 0;
+    }
+  }
+
+  return dilated;
+}
+
+function removeSmallComponents(data: Uint8Array, width: number, height: number, minArea: number): Uint8Array {
+  const result = new Uint8Array(data);
+  const visited = new Uint8Array(width * height);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (result[y * width + x] > 0 && visited[y * width + x] === 0) {
+        const pixels: number[] = [];
+        const stack = [[x, y]];
+
+        while (stack.length > 0) {
+          const [cx, cy] = stack.pop()!;
+          if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
+          const idx = cy * width + cx;
+          if (result[idx] === 0 || visited[idx] !== 0) continue;
+          visited[idx] = 1;
+          pixels.push(idx);
+          stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+        }
+
+        if (pixels.length < minArea) {
+          for (const idx of pixels) {
+            result[idx] = 0;
+          }
+        }
       }
     }
   }
@@ -274,8 +376,16 @@ function extractSignatureStrokes(data: Uint8Array, width: number, height: number
 
   const blockSize = Math.max(31, Math.floor(Math.min(width, height) * 0.08) | 1);
   const thresh = adaptiveThreshold(data, width, height, blockSize);
-  const cleaned = removeLines(thresh, width, height);
-  return findLargestComponent(cleaned, width, height);
+
+  const linesRemoved = removeLines(thresh, width, height);
+
+  const openRadius = Math.max(1, Math.floor(Math.min(width, height) / 200));
+  const opened = morphOpen(linesRemoved, width, height, openRadius);
+
+  const minArea = Math.max(50, Math.floor(width * height * 0.001));
+  const smallRemoved = removeSmallComponents(opened, width, height, minArea);
+
+  return findLargestComponent(smallRemoved, width, height);
 }
 
 function normalizeSignature(data: Uint8Array, width: number, height: number, targetHeight: number = 250, targetWidth: number = 600): { data: Uint8Array; width: number; height: number } | null {
@@ -530,6 +640,7 @@ async function extractCandidatesFromPdf(
   if (slotRegions.length === 0) return { candidates: [], cropImages: [] };
 
   const pages = await pdfToImages(pdfBuffer, dpi);
+  console.log(`[engine] slot=${slot} totalPages=${pages.length} regions=${slotRegions.length}`);
   const candidates: SignatureCandidate[] = [];
   const cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
 
