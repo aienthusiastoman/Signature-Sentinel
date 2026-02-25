@@ -1,8 +1,12 @@
 import sharp from "sharp";
 import type { MaskRegion } from "@shared/schema";
-import { createCanvas, Image } from "canvas";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import { writeFile, readFile, mkdtemp, rm } from "fs/promises";
+import path from "path";
+import os from "os";
 
-const DEFAULT_DPI = 200;
+const execFileAsync = promisify(execFile);
 
 interface SignatureCandidate {
   pageNumber: number;
@@ -27,114 +31,104 @@ export interface VerificationOutput {
   signature2Image?: string;
 }
 
-class NodeCanvasFactory {
-  create(width: number, height: number) {
-    const canvas = createCanvas(width, height);
-    const context = canvas.getContext("2d");
-    return { canvas, context };
+async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data: Uint8Array; width: number; height: number; page: number }[]> {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "sigverify-"));
+  const pdfPath = path.join(tmpDir, "input.pdf");
+  const outputPrefix = path.join(tmpDir, "page");
+
+  try {
+    await writeFile(pdfPath, pdfBuffer);
+
+    await execFileAsync("pdftoppm", [
+      "-png",
+      "-r", dpi.toString(),
+      pdfPath,
+      outputPrefix,
+    ]);
+
+    const { stdout } = await execFileAsync("pdfinfo", [pdfPath]);
+    const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
+    const pageCount = pagesMatch ? parseInt(pagesMatch[1]) : 1;
+
+    const results: { data: Uint8Array; width: number; height: number; page: number }[] = [];
+
+    for (let i = 1; i <= pageCount; i++) {
+      const pageSuffix = pageCount > 9 ? String(i).padStart(String(pageCount).length, "0") : String(i);
+      const imgPath = path.join(tmpDir, `page-${pageSuffix}.png`);
+
+      try {
+        const imgBuffer = await readFile(imgPath);
+        const metadata = await sharp(imgBuffer).metadata();
+        const { data, info } = await sharp(imgBuffer)
+          .grayscale()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+
+        results.push({
+          data: new Uint8Array(data),
+          width: info.width,
+          height: info.height,
+          page: i,
+        });
+      } catch {
+        // page image not found, skip
+      }
+    }
+
+    return results;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
-
-  reset(canvasAndContext: any, width: number, height: number) {
-    canvasAndContext.canvas.width = width;
-    canvasAndContext.canvas.height = height;
-  }
-
-  destroy(canvasAndContext: any) {
-    canvasAndContext.canvas.width = 0;
-    canvasAndContext.canvas.height = 0;
-    canvasAndContext.canvas = null;
-    canvasAndContext.context = null;
-  }
-}
-
-function getDocOptions(pdfBuffer: Buffer) {
-  return {
-    data: new Uint8Array(pdfBuffer),
-    useSystemFonts: true,
-    canvasFactory: new NodeCanvasFactory() as any,
-    isOffscreenCanvasSupported: false,
-  };
-}
-
-async function pdfPageToImage(pdfBuffer: Buffer, pageNumber: number, dpi: number): Promise<{ data: Uint8Array; width: number; height: number }> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-
-  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
-  const doc = await loadingTask.promise;
-
-  if (pageNumber > doc.numPages) {
-    throw new Error(`Page ${pageNumber} does not exist (document has ${doc.numPages} pages)`);
-  }
-
-  const page = await doc.getPage(pageNumber);
-  const viewport = page.getViewport({ scale: dpi / 72 });
-
-  const width = Math.floor(viewport.width);
-  const height = Math.floor(viewport.height);
-
-  const canvasFactory = new NodeCanvasFactory();
-  const { canvas, context: ctx } = canvasFactory.create(width, height);
-
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, width, height);
-
-  await page.render({
-    canvasContext: ctx as any,
-    viewport: viewport,
-    canvasFactory: canvasFactory as any,
-  }).promise;
-
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const grayData = new Uint8Array(width * height);
-
-  for (let i = 0; i < width * height; i++) {
-    const r = imageData.data[i * 4];
-    const g = imageData.data[i * 4 + 1];
-    const b = imageData.data[i * 4 + 2];
-    grayData[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-  }
-
-  await doc.destroy();
-  return { data: grayData, width, height };
 }
 
 export async function getPdfPageCount(pdfBuffer: Buffer): Promise<number> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(pdfBuffer) });
-  const doc = await loadingTask.promise;
-  const count = doc.numPages;
-  await doc.destroy();
-  return count;
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "sigverify-"));
+  const pdfPath = path.join(tmpDir, "input.pdf");
+
+  try {
+    await writeFile(pdfPath, pdfBuffer);
+    const { stdout } = await execFileAsync("pdfinfo", [pdfPath]);
+    const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
+    return pagesMatch ? parseInt(pagesMatch[1]) : 1;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export async function renderPdfPage(pdfBuffer: Buffer, pageNumber: number, maxWidth: number = 800): Promise<Buffer> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
-  const doc = await loadingTask.promise;
-  const page = await doc.getPage(pageNumber);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "sigverify-"));
+  const pdfPath = path.join(tmpDir, "input.pdf");
+  const outputPrefix = path.join(tmpDir, "page");
 
-  const baseViewport = page.getViewport({ scale: 1 });
-  const scale = Math.min(maxWidth / baseViewport.width, 3);
-  const viewport = page.getViewport({ scale });
+  try {
+    await writeFile(pdfPath, pdfBuffer);
 
-  const width = Math.floor(viewport.width);
-  const height = Math.floor(viewport.height);
+    await execFileAsync("pdftoppm", [
+      "-png",
+      "-r", "150",
+      "-f", pageNumber.toString(),
+      "-l", pageNumber.toString(),
+      pdfPath,
+      outputPrefix,
+    ]);
 
-  const canvasFactory = new NodeCanvasFactory();
-  const { canvas, context: ctx } = canvasFactory.create(width, height);
+    const { stdout } = await execFileAsync("pdfinfo", [pdfPath]);
+    const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
+    const pageCount = pagesMatch ? parseInt(pagesMatch[1]) : 1;
+    const pageSuffix = pageCount > 9 ? String(pageNumber).padStart(String(pageCount).length, "0") : String(pageNumber);
+    const imgPath = path.join(tmpDir, `page-${pageSuffix}.png`);
 
-  ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, width, height);
+    const imgBuffer = await readFile(imgPath);
 
-  await page.render({
-    canvasContext: ctx as any,
-    viewport: viewport,
-    canvasFactory: canvasFactory as any,
-  }).promise;
+    const resized = await sharp(imgBuffer)
+      .resize({ width: maxWidth, withoutEnlargement: true })
+      .png()
+      .toBuffer();
 
-  const pngBuffer = canvas.toBuffer("image/png");
-  await doc.destroy();
-  return pngBuffer;
+    return resized;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function cropRegion(data: Uint8Array, imgWidth: number, imgHeight: number, region: MaskRegion): { data: Uint8Array; width: number; height: number } {
@@ -142,6 +136,8 @@ function cropRegion(data: Uint8Array, imgWidth: number, imgHeight: number, regio
   const y = Math.max(0, Math.floor(region.y));
   const w = Math.min(Math.floor(region.width), imgWidth - x);
   const h = Math.min(Math.floor(region.height), imgHeight - y);
+
+  if (w <= 0 || h <= 0) return { data: new Uint8Array(0), width: 0, height: 0 };
 
   const cropped = new Uint8Array(w * h);
   for (let row = 0; row < h; row++) {
@@ -507,35 +503,11 @@ async function extractCandidatesFromPdf(
   regions: MaskRegion[],
   dpi: number
 ): Promise<SignatureCandidate[]> {
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjs.getDocument(getDocOptions(pdfBuffer));
-  const doc = await loadingTask.promise;
+  const pages = await pdfToImages(pdfBuffer, dpi);
   const candidates: SignatureCandidate[] = [];
 
-  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+  for (const pageData of pages) {
     for (const region of regions) {
-      const page = await doc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: dpi / 72 });
-      const width = Math.floor(viewport.width);
-      const height = Math.floor(viewport.height);
-
-      const canvasFactory = new NodeCanvasFactory();
-      const { canvas, context: ctx } = canvasFactory.create(width, height);
-
-      ctx.fillStyle = "white";
-      ctx.fillRect(0, 0, width, height);
-
-      await page.render({ canvasContext: ctx as any, viewport, canvasFactory: canvasFactory as any }).promise;
-
-      const imageData = ctx.getImageData(0, 0, width, height);
-      const grayData = new Uint8Array(width * height);
-      for (let i = 0; i < width * height; i++) {
-        const r = imageData.data[i * 4];
-        const g = imageData.data[i * 4 + 1];
-        const b = imageData.data[i * 4 + 2];
-        grayData[i] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-      }
-
       const scaleFactor = dpi / 72;
       const scaledRegion = {
         ...region,
@@ -545,12 +517,14 @@ async function extractCandidatesFromPdf(
         height: region.height * scaleFactor,
       };
 
-      const cropped = cropRegion(grayData, width, height, scaledRegion);
+      const cropped = cropRegion(pageData.data, pageData.width, pageData.height, scaledRegion);
+      if (cropped.width === 0 || cropped.height === 0) continue;
+
       const strokes = extractSignatureStrokes(cropped.data, cropped.width, cropped.height);
 
       if (strokes) {
         candidates.push({
-          pageNumber: pageNum,
+          pageNumber: pageData.page,
           pixels: strokes,
           width: cropped.width,
           height: cropped.height,
@@ -559,7 +533,6 @@ async function extractCandidatesFromPdf(
     }
   }
 
-  await doc.destroy();
   return candidates;
 }
 
