@@ -192,8 +192,10 @@ function adaptiveThreshold(data: Uint8Array, width: number, height: number, bloc
 function removeLines(data: Uint8Array, width: number, height: number): Uint8Array {
   const result = new Uint8Array(data);
 
-  const hThreshold = Math.max(40, Math.floor(width * 0.12));
-  const vThreshold = Math.max(40, Math.floor(height * 0.12));
+  const hThreshold = Math.max(40, Math.floor(width * 0.10));
+  const vThreshold = Math.max(40, Math.floor(height * 0.10));
+  const maxLineThickness = 7;
+  const checkRadius = 5;
 
   for (let y = 0; y < height; y++) {
     let runStart = -1;
@@ -202,16 +204,16 @@ function removeLines(data: Uint8Array, width: number, height: number): Uint8Arra
       if (val > 0 && runStart < 0) runStart = x;
       if (val === 0 && runStart >= 0) {
         const runLen = x - runStart;
-        let runHeight = 0;
+        let maxThickness = 0;
         for (let rx = runStart; rx < x; rx++) {
           let vertCount = 0;
-          for (let dy = -2; dy <= 2; dy++) {
+          for (let dy = -checkRadius; dy <= checkRadius; dy++) {
             const ny = y + dy;
             if (ny >= 0 && ny < height && data[ny * width + rx] > 0) vertCount++;
           }
-          if (vertCount > runHeight) runHeight = vertCount;
+          if (vertCount > maxThickness) maxThickness = vertCount;
         }
-        if (runLen > hThreshold && runHeight <= 3) {
+        if (runLen > hThreshold && maxThickness <= maxLineThickness) {
           for (let rx = runStart; rx < x; rx++) result[y * width + rx] = 0;
         }
         runStart = -1;
@@ -226,16 +228,16 @@ function removeLines(data: Uint8Array, width: number, height: number): Uint8Arra
       if (val > 0 && runStart < 0) runStart = y;
       if (val === 0 && runStart >= 0) {
         const runLen = y - runStart;
-        let runWidth = 0;
+        let maxThickness = 0;
         for (let ry = runStart; ry < y; ry++) {
           let horizCount = 0;
-          for (let dx = -2; dx <= 2; dx++) {
+          for (let dx = -checkRadius; dx <= checkRadius; dx++) {
             const nx = x + dx;
             if (nx >= 0 && nx < width && result[ry * width + nx] > 0) horizCount++;
           }
-          if (horizCount > runWidth) runWidth = horizCount;
+          if (horizCount > maxThickness) maxThickness = horizCount;
         }
-        if (runLen > vThreshold && runWidth <= 3) {
+        if (runLen > vThreshold && maxThickness <= maxLineThickness) {
           for (let ry = runStart; ry < y; ry++) result[ry * width + x] = 0;
         }
         runStart = -1;
