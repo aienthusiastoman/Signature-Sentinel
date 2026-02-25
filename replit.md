@@ -27,6 +27,8 @@ A web-based signature verification platform that allows users to create mask tem
 ## Mask Regions & File Slots
 Each mask region has a `fileSlot` (1-indexed) indicating which uploaded file it applies to. Templates can have 2-5 file slots. When verifying, users upload one PDF per slot. Each file is scanned using only the regions assigned to its slot.
 
+Regions also store `canvasWidth` and `canvasHeight` — the actual canvas pixel dimensions from the template editor at draw time. These ensure exact coordinate mapping between the preview render (150 DPI, max 800px wide) and the verification render (at the template's DPI). Legacy regions without these fields use a fallback computed from PDF metadata.
+
 ## Signature Processing Pipeline
 Port of Python OpenCV code to TypeScript:
 1. PDF page → grayscale image (via poppler pdftoppm + sharp)

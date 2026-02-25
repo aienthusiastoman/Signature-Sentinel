@@ -20,6 +20,8 @@ export const maskRegionSchema = z.object({
   height: z.number(),
   label: z.string().optional(),
   fileSlot: z.number().min(1),
+  canvasWidth: z.number().optional(),
+  canvasHeight: z.number().optional(),
 });
 
 export type MaskRegion = z.infer<typeof maskRegionSchema>;

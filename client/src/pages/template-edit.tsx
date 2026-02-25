@@ -251,6 +251,7 @@ export default function TemplateEdit() {
     const h = Math.abs(drawing.endY - drawing.startY);
 
     if (w > 10 && h > 10) {
+      const canvas = canvasRef.current;
       const slotState = slotPdfs[activeSlot] || defaultSlotPdf;
       const slotRegions = regions.filter(r => r.fileSlot === activeSlot);
       const newRegion: MaskRegion = {
@@ -261,6 +262,8 @@ export default function TemplateEdit() {
         height: Math.round(h),
         label: `Region ${slotRegions.length + 1}`,
         fileSlot: activeSlot,
+        canvasWidth: canvas?.width || 800,
+        canvasHeight: canvas?.height || 1035,
       };
       setRegions([...regions, newRegion]);
     }

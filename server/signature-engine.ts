@@ -150,7 +150,7 @@ function cropRegion(data: Uint8Array, imgWidth: number, imgHeight: number, regio
   return { data: cropped, width: w, height: h };
 }
 
-function adaptiveThreshold(data: Uint8Array, width: number, height: number, blockSize: number = 31, C: number = 15): Uint8Array {
+function adaptiveThreshold(data: Uint8Array, width: number, height: number, blockSize: number = 31, C: number = 10): Uint8Array {
   const result = new Uint8Array(width * height);
   const halfBlock = Math.floor(blockSize / 2);
 
@@ -188,13 +188,16 @@ function adaptiveThreshold(data: Uint8Array, width: number, height: number, bloc
 function removeLines(data: Uint8Array, width: number, height: number): Uint8Array {
   const result = new Uint8Array(data);
 
+  const hThreshold = Math.max(80, Math.floor(width * 0.3));
+  const vThreshold = Math.max(80, Math.floor(height * 0.3));
+
   for (let y = 0; y < height; y++) {
     let runStart = -1;
     for (let x = 0; x <= width; x++) {
       const val = x < width ? data[y * width + x] : 0;
       if (val > 0 && runStart < 0) runStart = x;
       if (val === 0 && runStart >= 0) {
-        if (x - runStart > 80) {
+        if (x - runStart > hThreshold) {
           for (let rx = runStart; rx < x; rx++) result[y * width + rx] = 0;
         }
         runStart = -1;
@@ -208,7 +211,7 @@ function removeLines(data: Uint8Array, width: number, height: number): Uint8Arra
       const val = y < height ? result[y * width + x] : 0;
       if (val > 0 && runStart < 0) runStart = y;
       if (val === 0 && runStart >= 0) {
-        if (y - runStart > 80) {
+        if (y - runStart > vThreshold) {
           for (let ry = runStart; ry < y; ry++) result[ry * width + x] = 0;
         }
         runStart = -1;
@@ -269,7 +272,8 @@ function findLargestComponent(data: Uint8Array, width: number, height: number): 
 function extractSignatureStrokes(data: Uint8Array, width: number, height: number): Uint8Array | null {
   if (!data || data.length === 0) return null;
 
-  const thresh = adaptiveThreshold(data, width, height);
+  const blockSize = Math.max(31, Math.floor(Math.min(width, height) * 0.08) | 1);
+  const thresh = adaptiveThreshold(data, width, height, blockSize);
   const cleaned = removeLines(thresh, width, height);
   return findLargestComponent(cleaned, width, height);
 }
@@ -529,20 +533,23 @@ async function extractCandidatesFromPdf(
   const candidates: SignatureCandidate[] = [];
   const cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
 
-  const pageSize = await getPdfPageSize(pdfBuffer);
+  const fallbackPageSize = await getPdfPageSize(pdfBuffer);
   const previewRenderDpi = 150;
   const previewMaxWidth = 800;
-  const previewRenderWidth = pageSize.width * previewRenderDpi / 72;
-  const previewScale = previewRenderWidth > previewMaxWidth ? previewMaxWidth / previewRenderWidth : 1;
-  const previewWidth = previewRenderWidth * previewScale;
-  const previewHeight = (pageSize.height * previewRenderDpi / 72) * previewScale;
+  const fallbackRenderWidth = fallbackPageSize.width * previewRenderDpi / 72;
+  const fallbackScale = fallbackRenderWidth > previewMaxWidth ? previewMaxWidth / fallbackRenderWidth : 1;
+  const fallbackPreviewWidth = fallbackRenderWidth * fallbackScale;
+  const fallbackPreviewHeight = (fallbackPageSize.height * previewRenderDpi / 72) * fallbackScale;
 
   for (const pageData of pages) {
-    const scaleX = pageData.width / previewWidth;
-    const scaleY = pageData.height / previewHeight;
 
     for (const region of slotRegions) {
       if (region.pageNumber !== pageData.page) continue;
+
+      const previewWidth = region.canvasWidth || fallbackPreviewWidth;
+      const previewHeight = region.canvasHeight || fallbackPreviewHeight;
+      const scaleX = pageData.width / previewWidth;
+      const scaleY = pageData.height / previewHeight;
 
       const scaledRegion = {
         ...region,
