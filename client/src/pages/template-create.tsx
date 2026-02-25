@@ -60,18 +60,16 @@ export default function TemplateCreate() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
-  const getSlotPdf = (slot: number): SlotPdfState => {
-    return slotPdfs[slot] || { file: null, pageCount: 0, currentPage: 1, pageImage: null, loadingPage: false };
-  };
+  const defaultSlotPdf: SlotPdfState = { file: null, pageCount: 0, currentPage: 1, pageImage: null, loadingPage: false };
 
   const updateSlotPdf = (slot: number, update: Partial<SlotPdfState>) => {
     setSlotPdfs(prev => ({
       ...prev,
-      [slot]: { ...getSlotPdf(slot), ...update },
+      [slot]: { ...(prev[slot] || defaultSlotPdf), ...update },
     }));
   };
 
-  const currentSlotPdf = getSlotPdf(activeSlot);
+  const currentSlotPdf = slotPdfs[activeSlot] || defaultSlotPdf;
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -140,7 +138,7 @@ export default function TemplateCreate() {
   };
 
   const handlePageChange = (slot: number, newPage: number) => {
-    const slotState = getSlotPdf(slot);
+    const slotState = slotPdfs[slot] || defaultSlotPdf;
     if (!slotState.file) return;
     updateSlotPdf(slot, { currentPage: newPage });
     loadPageImage(slotState.file, newPage, slot);
@@ -158,7 +156,7 @@ export default function TemplateCreate() {
     canvas.height = img.naturalHeight;
     ctx.drawImage(img, 0, 0);
 
-    const slotState = getSlotPdf(activeSlot);
+    const slotState = slotPdfs[activeSlot] || defaultSlotPdf;
     const pageRegions = regions.filter(r => r.fileSlot === activeSlot && r.pageNumber === slotState.currentPage);
     for (const region of pageRegions) {
       const color = getSlotColor(region.fileSlot);
@@ -229,7 +227,7 @@ export default function TemplateCreate() {
     const h = Math.abs(drawing.endY - drawing.startY);
 
     if (w > 10 && h > 10) {
-      const slotState = getSlotPdf(activeSlot);
+      const slotState = slotPdfs[activeSlot] || defaultSlotPdf;
       const slotRegions = regions.filter(r => r.fileSlot === activeSlot);
       const newRegion: MaskRegion = {
         pageNumber: slotState.currentPage,
@@ -281,7 +279,7 @@ export default function TemplateCreate() {
                 {Array.from({ length: fileSlotCount }, (_, i) => i + 1).map(slot => {
                   const color = getSlotColor(slot);
                   const count = regions.filter(r => r.fileSlot === slot).length;
-                  const hasPdf = !!getSlotPdf(slot).file;
+                  const hasPdf = !!(slotPdfs[slot] || defaultSlotPdf).file;
                   return (
                     <Button
                       key={slot}
