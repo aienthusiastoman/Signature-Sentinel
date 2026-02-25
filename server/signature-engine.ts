@@ -625,13 +625,14 @@ async function extractCandidatesFromPdf(
   pdfBuffer: Buffer,
   slot: number,
   regions: MaskRegion[],
-  dpi: number
+  dpi: number,
+  scanAllPages: boolean = false
 ): Promise<{ candidates: SignatureCandidate[]; cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] }> {
   const slotRegions = regions.filter(r => r.fileSlot === slot);
   if (slotRegions.length === 0) return { candidates: [], cropImages: [] };
 
   const pages = await pdfToImages(pdfBuffer, dpi);
-  console.log(`[engine] slot=${slot} totalPages=${pages.length} regions=${slotRegions.length}`);
+  console.log(`[engine] slot=${slot} totalPages=${pages.length} regions=${slotRegions.length} scanAllPages=${scanAllPages}`);
   const candidates: SignatureCandidate[] = [];
   const cropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
 
@@ -647,7 +648,16 @@ async function extractCandidatesFromPdf(
     const previewWidth = region.canvasWidth || fallbackPreviewWidth;
     const previewHeight = region.canvasHeight || fallbackPreviewHeight;
 
-    for (const pageData of pages) {
+    const pagesToScan = scanAllPages
+      ? pages
+      : pages.filter(p => p.page === region.pageNumber);
+
+    if (pagesToScan.length === 0) {
+      console.log(`[engine] slot=${slot} region page=${region.pageNumber} not found in PDF, skipping`);
+      continue;
+    }
+
+    for (const pageData of pagesToScan) {
       const scaleX = pageData.width / previewWidth;
       const scaleY = pageData.height / previewHeight;
 
@@ -698,8 +708,12 @@ export async function verifySignatures(
   const allCandidates = new Map<number, SignatureCandidate[]>();
   const allCropImages: { slot: number; page: number; imageData: Uint8Array; width: number; height: number }[] = [];
 
+  const sortedSlots = Array.from(fileBuffers.keys()).sort((a, b) => a - b);
+  const referenceSlot = sortedSlots[0];
+
   for (const [slot, buffer] of fileBuffers) {
-    const { candidates, cropImages } = await extractCandidatesFromPdf(buffer, slot, regions, dpi);
+    const scanAllPages = slot !== referenceSlot;
+    const { candidates, cropImages } = await extractCandidatesFromPdf(buffer, slot, regions, dpi, scanAllPages);
     allCandidates.set(slot, candidates);
     allCropImages.push(...cropImages);
   }
