@@ -48,26 +48,20 @@ async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data
       outputPrefix,
     ]);
 
-    const { stdout } = await execFileAsync("pdfinfo", [pdfPath]);
-    const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
-    const pageCount = pagesMatch ? parseInt(pagesMatch[1]) : 1;
+    const { readdir } = await import("fs/promises");
+    const allFiles = await readdir(tmpDir);
+    const pngFiles = allFiles
+      .filter(f => f.startsWith("page") && f.endsWith(".png"))
+      .sort();
+
+    console.log(`[engine] pdftoppm generated ${pngFiles.length} files: ${pngFiles.join(", ")}`);
 
     const results: { data: Uint8Array; width: number; height: number; page: number }[] = [];
 
-    for (let i = 1; i <= pageCount; i++) {
-      const pageSuffix = pageCount > 9 ? String(i).padStart(String(pageCount).length, "0") : String(i);
-      let imgPath = path.join(tmpDir, `page-${pageSuffix}.png`);
-
-      try {
-        await readFile(imgPath);
-      } catch {
-        if (pageCount === 1) {
-          imgPath = path.join(tmpDir, `page.png`);
-        } else {
-          console.log(`[engine] page ${i} image not found at expected path, skipping`);
-          continue;
-        }
-      }
+    for (const pngFile of pngFiles) {
+      const pageMatch = pngFile.match(/page-?(\d+)\.png$/);
+      const pageNum = pageMatch ? parseInt(pageMatch[1]) : 1;
+      const imgPath = path.join(tmpDir, pngFile);
 
       try {
         const imgBuffer = await readFile(imgPath);
@@ -80,10 +74,10 @@ async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data
           data: new Uint8Array(data),
           width: info.width,
           height: info.height,
-          page: i,
+          page: pageNum,
         });
       } catch (e: any) {
-        console.log(`[engine] failed to read page ${i}: ${e.message}`);
+        console.log(`[engine] failed to read ${pngFile}: ${e.message}`);
       }
     }
 
@@ -755,7 +749,11 @@ export async function verifySignatures(
 
   for (const crop of allCropImages) {
     const key = `slot${crop.slot}`;
-    if (!signatureImages[key]) {
+    const isBestPage = bestPair && (
+      (crop.slot === bestPair.slot1 && crop.page === bestPair.page1) ||
+      (crop.slot === bestPair.slot2 && crop.page === bestPair.page2)
+    );
+    if (isBestPage || !signatureImages[key]) {
       signatureImages[key] = await grayToBase64Png(crop.imageData, crop.width, crop.height);
     }
   }
