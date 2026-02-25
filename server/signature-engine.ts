@@ -9,6 +9,7 @@ import os from "os";
 const execFileAsync = promisify(execFile);
 
 interface SignatureCandidate {
+  slot: number;
   pageNumber: number;
   pixels: Uint8Array;
   width: number;
@@ -16,6 +17,8 @@ interface SignatureCandidate {
 }
 
 interface ComparisonResult {
+  slot1: number;
+  slot2: number;
   file1Page: number;
   file2Page: number;
   rawScore: number;
@@ -25,10 +28,9 @@ interface ComparisonResult {
 export interface VerificationOutput {
   confidenceScore: number;
   matchMode: string;
-  bestMatch?: { file1Page: number; file2Page: number };
+  bestMatch?: { file1Slot: number; file2Slot: number; file1Page: number; file2Page: number };
   comparisons: ComparisonResult[];
-  signature1Image?: string;
-  signature2Image?: string;
+  signatureImages?: Record<string, string>;
 }
 
 async function pdfToImages(pdfBuffer: Buffer, dpi: number = 200): Promise<{ data: Uint8Array; width: number; height: number; page: number }[]> {
@@ -500,14 +502,18 @@ async function grayToBase64Png(data: Uint8Array, width: number, height: number):
 
 async function extractCandidatesFromPdf(
   pdfBuffer: Buffer,
+  slot: number,
   regions: MaskRegion[],
   dpi: number
 ): Promise<SignatureCandidate[]> {
+  const slotRegions = regions.filter(r => r.fileSlot === slot);
+  if (slotRegions.length === 0) return [];
+
   const pages = await pdfToImages(pdfBuffer, dpi);
   const candidates: SignatureCandidate[] = [];
 
   for (const pageData of pages) {
-    for (const region of regions) {
+    for (const region of slotRegions) {
       const scaleFactor = dpi / 72;
       const scaledRegion = {
         ...region,
@@ -524,6 +530,7 @@ async function extractCandidatesFromPdf(
 
       if (strokes) {
         candidates.push({
+          slot,
           pageNumber: pageData.page,
           pixels: strokes,
           width: cropped.width,
@@ -537,65 +544,68 @@ async function extractCandidatesFromPdf(
 }
 
 export async function verifySignatures(
-  file1Buffer: Buffer,
-  file2Buffer: Buffer,
+  fileBuffers: Map<number, Buffer>,
   regions: MaskRegion[],
   matchMode: string = "relaxed",
   dpi: number = 200
 ): Promise<VerificationOutput> {
-  const candidates1 = await extractCandidatesFromPdf(file1Buffer, regions, dpi);
-  const candidates2 = await extractCandidatesFromPdf(file2Buffer, regions, dpi);
+  const allCandidates = new Map<number, SignatureCandidate[]>();
 
-  if (candidates1.length === 0 || candidates2.length === 0) {
-    return {
-      confidenceScore: 0,
-      matchMode,
-      comparisons: [],
-      signature1Image: undefined,
-      signature2Image: undefined,
-    };
+  for (const [slot, buffer] of fileBuffers) {
+    const candidates = await extractCandidatesFromPdf(buffer, slot, regions, dpi);
+    allCandidates.set(slot, candidates);
   }
 
-  let bestScore = 0;
-  let bestPair: { idx1: number; idx2: number; norm1: any; norm2: any } | null = null;
+  const slots = Array.from(allCandidates.keys()).sort((a, b) => a - b);
   const comparisons: ComparisonResult[] = [];
+  let bestScore = 0;
+  let bestPair: { slot1: number; slot2: number; page1: number; page2: number; norm1: any; norm2: any } | null = null;
 
-  for (const c1 of candidates1) {
-    for (const c2 of candidates2) {
-      const { score: rawScore, norm1, norm2 } = curveSimilarity(
-        c1.pixels, c1.width, c1.height,
-        c2.pixels, c2.width, c2.height
-      );
-      const adjustedScore = applyMatchMode(rawScore, matchMode);
+  for (let i = 0; i < slots.length; i++) {
+    for (let j = i + 1; j < slots.length; j++) {
+      const s1 = slots[i];
+      const s2 = slots[j];
+      const cands1 = allCandidates.get(s1) || [];
+      const cands2 = allCandidates.get(s2) || [];
 
-      comparisons.push({
-        file1Page: c1.pageNumber,
-        file2Page: c2.pageNumber,
-        rawScore: Math.round(rawScore * 100) / 100,
-        adjustedScore: Math.round(adjustedScore * 100) / 100,
-      });
+      for (const c1 of cands1) {
+        for (const c2 of cands2) {
+          const { score: rawScore, norm1, norm2 } = curveSimilarity(
+            c1.pixels, c1.width, c1.height,
+            c2.pixels, c2.width, c2.height
+          );
+          const adjustedScore = applyMatchMode(rawScore, matchMode);
 
-      if (adjustedScore > bestScore && norm1 && norm2) {
-        bestScore = adjustedScore;
-        bestPair = { idx1: c1.pageNumber, idx2: c2.pageNumber, norm1, norm2 };
+          comparisons.push({
+            slot1: s1,
+            slot2: s2,
+            file1Page: c1.pageNumber,
+            file2Page: c2.pageNumber,
+            rawScore: Math.round(rawScore * 100) / 100,
+            adjustedScore: Math.round(adjustedScore * 100) / 100,
+          });
+
+          if (adjustedScore > bestScore && norm1 && norm2) {
+            bestScore = adjustedScore;
+            bestPair = { slot1: s1, slot2: s2, page1: c1.pageNumber, page2: c2.pageNumber, norm1, norm2 };
+          }
+        }
       }
     }
   }
 
-  let sig1Image: string | undefined;
-  let sig2Image: string | undefined;
+  const signatureImages: Record<string, string> = {};
 
   if (bestPair) {
-    sig1Image = await grayToBase64Png(bestPair.norm1.data, bestPair.norm1.width, bestPair.norm1.height);
-    sig2Image = await grayToBase64Png(bestPair.norm2.data, bestPair.norm2.width, bestPair.norm2.height);
+    signatureImages[`slot${bestPair.slot1}`] = await grayToBase64Png(bestPair.norm1.data, bestPair.norm1.width, bestPair.norm1.height);
+    signatureImages[`slot${bestPair.slot2}`] = await grayToBase64Png(bestPair.norm2.data, bestPair.norm2.width, bestPair.norm2.height);
   }
 
   return {
     confidenceScore: Math.round(bestScore * 100) / 100,
     matchMode,
-    bestMatch: bestPair ? { file1Page: bestPair.idx1, file2Page: bestPair.idx2 } : undefined,
+    bestMatch: bestPair ? { file1Slot: bestPair.slot1, file2Slot: bestPair.slot2, file1Page: bestPair.page1, file2Page: bestPair.page2 } : undefined,
     comparisons,
-    signature1Image: sig1Image,
-    signature2Image: sig2Image,
+    signatureImages: Object.keys(signatureImages).length > 0 ? signatureImages : undefined,
   };
 }

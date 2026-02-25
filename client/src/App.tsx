@@ -13,6 +13,7 @@ import Dashboard from "@/pages/dashboard";
 import TemplatesList from "@/pages/templates-list";
 import TemplateCreate from "@/pages/template-create";
 import TemplateDetail from "@/pages/template-detail";
+import TemplateEdit from "@/pages/template-edit";
 import VerifyPage from "@/pages/verify-page";
 import VerificationsList from "@/pages/verifications-list";
 import VerificationDetail from "@/pages/verification-detail";
@@ -26,6 +27,7 @@ function AuthenticatedRouter() {
       <Route path="/templates" component={TemplatesList} />
       <Route path="/templates/new" component={TemplateCreate} />
       <Route path="/templates/:id" component={TemplateDetail} />
+      <Route path="/templates/:id/edit" component={TemplateEdit} />
       <Route path="/verify" component={VerifyPage} />
       <Route path="/verifications" component={VerificationsList} />
       <Route path="/verifications/:id" component={VerificationDetail} />

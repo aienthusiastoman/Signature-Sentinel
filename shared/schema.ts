@@ -19,6 +19,7 @@ export const maskRegionSchema = z.object({
   width: z.number(),
   height: z.number(),
   label: z.string().optional(),
+  fileSlot: z.number().min(1),
 });
 
 export type MaskRegion = z.infer<typeof maskRegionSchema>;
@@ -30,6 +31,7 @@ export const templates = pgTable("templates", {
   userId: varchar("user_id").notNull(),
   maskRegions: jsonb("mask_regions").notNull().$type<MaskRegion[]>(),
   sourcePageCount: integer("source_page_count").default(1),
+  fileSlotCount: integer("file_slot_count").default(2),
   dpi: integer("dpi").default(200),
   matchMode: text("match_mode").notNull().default("relaxed"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -39,17 +41,20 @@ export const verificationResultSchema = z.object({
   confidenceScore: z.number(),
   matchMode: z.string(),
   bestMatch: z.object({
+    file1Slot: z.number(),
+    file2Slot: z.number(),
     file1Page: z.number(),
     file2Page: z.number(),
   }).optional(),
   comparisons: z.array(z.object({
+    slot1: z.number(),
+    slot2: z.number(),
     file1Page: z.number(),
     file2Page: z.number(),
     rawScore: z.number(),
     adjustedScore: z.number(),
   })),
-  signature1Image: z.string().optional(),
-  signature2Image: z.string().optional(),
+  signatureImages: z.record(z.string(), z.string()).optional(),
 });
 
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
@@ -60,6 +65,7 @@ export const verifications = pgTable("verifications", {
   userId: varchar("user_id").notNull(),
   confidenceScore: real("confidence_score"),
   results: jsonb("results").$type<VerificationResult>(),
+  fileNames: jsonb("file_names").$type<Record<string, string>>(),
   file1Name: text("file1_name"),
   file2Name: text("file2_name"),
   createdAt: timestamp("created_at").defaultNow(),
@@ -77,6 +83,7 @@ export const insertTemplateSchema = createInsertSchema(templates).pick({
   dpi: true,
 }).extend({
   maskRegions: z.array(maskRegionSchema),
+  fileSlotCount: z.number().min(2).optional(),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;

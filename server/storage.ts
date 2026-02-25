@@ -21,6 +21,7 @@ export interface IStorage {
   getTemplates(userId: string): Promise<Template[]>;
   getTemplate(id: string): Promise<Template | undefined>;
   createTemplate(template: InsertTemplate & { userId: string }): Promise<Template>;
+  updateTemplate(id: string, data: Partial<InsertTemplate>): Promise<Template | undefined>;
   deleteTemplate(id: string): Promise<void>;
 
   getVerifications(userId: string): Promise<Verification[]>;
@@ -32,6 +33,7 @@ export interface IStorage {
     results: VerificationResult;
     file1Name: string;
     file2Name: string;
+    fileNames?: Record<string, string>;
   }): Promise<Verification>;
 }
 
@@ -84,14 +86,32 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createTemplate(data: InsertTemplate & { userId: string }): Promise<Template> {
+    const fileSlotCount = Math.max(2, ...data.maskRegions.map(r => r.fileSlot));
     const [template] = await db.insert(templates).values({
       name: data.name,
       description: data.description,
       userId: data.userId,
       maskRegions: data.maskRegions,
+      fileSlotCount,
       dpi: data.dpi || 200,
       matchMode: data.matchMode || "relaxed",
     }).returning();
+    return template;
+  }
+
+  async updateTemplate(id: string, data: Partial<InsertTemplate>): Promise<Template | undefined> {
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.description !== undefined) updateData.description = data.description;
+    if (data.maskRegions !== undefined) {
+      updateData.maskRegions = data.maskRegions;
+      updateData.fileSlotCount = Math.max(2, ...data.maskRegions.map(r => r.fileSlot));
+    }
+    if (data.dpi !== undefined) updateData.dpi = data.dpi;
+    if (data.matchMode !== undefined) updateData.matchMode = data.matchMode;
+    if (data.fileSlotCount !== undefined) updateData.fileSlotCount = data.fileSlotCount;
+
+    const [template] = await db.update(templates).set(updateData).where(eq(templates.id, id)).returning();
     return template;
   }
 
@@ -115,6 +135,7 @@ export class DatabaseStorage implements IStorage {
     results: VerificationResult;
     file1Name: string;
     file2Name: string;
+    fileNames?: Record<string, string>;
   }): Promise<Verification> {
     const [verification] = await db.insert(verifications).values({
       templateId: data.templateId,
@@ -123,6 +144,7 @@ export class DatabaseStorage implements IStorage {
       results: data.results,
       file1Name: data.file1Name,
       file2Name: data.file2Name,
+      fileNames: data.fileNames,
     }).returning();
     return verification;
   }

@@ -78,6 +78,19 @@ export async function registerRoutes(
     } catch (err) { next(err); }
   });
 
+  app.patch("/api/templates/:id", requireAuth, async (req, res, next) => {
+    try {
+      const user = req.user as any;
+      const template = await storage.getTemplate(req.params.id);
+      if (!template) return res.status(404).json({ message: "Template not found" });
+      if (template.userId !== user.id && user.role !== "admin") {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      const updated = await storage.updateTemplate(req.params.id, req.body);
+      res.json(updated);
+    } catch (err) { next(err); }
+  });
+
   app.delete("/api/templates/:id", requireAuth, async (req, res, next) => {
     try {
       const user = req.user as any;
@@ -109,17 +122,10 @@ export async function registerRoutes(
     } catch (err) { next(err); }
   });
 
-  app.post("/api/verify", requireAuth, upload.fields([
-    { name: "file1", maxCount: 1 },
-    { name: "file2", maxCount: 1 },
-  ]), async (req, res, next) => {
+  app.post("/api/verify", requireAuth, upload.any(), async (req, res, next) => {
     try {
       const user = req.user as any;
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-
-      if (!files.file1?.[0] || !files.file2?.[0]) {
-        return res.status(400).json({ message: "Two PDF files required" });
-      }
+      const files = req.files as Express.Multer.File[];
 
       const templateId = req.body.templateId;
       if (!templateId) return res.status(400).json({ message: "Template ID required" });
@@ -130,9 +136,21 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Access denied" });
       }
 
+      const fileSlotCount = template.fileSlotCount || 2;
+      const fileBuffers = new Map<number, Buffer>();
+      const fileNames: Record<string, string> = {};
+
+      for (let slot = 1; slot <= fileSlotCount; slot++) {
+        const file = files.find(f => f.fieldname === `file${slot}`);
+        if (!file) {
+          return res.status(400).json({ message: `File for slot ${slot} (file${slot}) is required` });
+        }
+        fileBuffers.set(slot, file.buffer);
+        fileNames[`slot${slot}`] = file.originalname;
+      }
+
       const result = await verifySignatures(
-        files.file1[0].buffer,
-        files.file2[0].buffer,
+        fileBuffers,
         template.maskRegions,
         template.matchMode,
         template.dpi || 200
@@ -143,8 +161,9 @@ export async function registerRoutes(
         userId: user.id,
         confidenceScore: result.confidenceScore,
         results: result,
-        file1Name: files.file1[0].originalname,
-        file2Name: files.file2[0].originalname,
+        file1Name: fileNames["slot1"] || "",
+        file2Name: fileNames["slot2"] || "",
+        fileNames,
       });
 
       res.json(verification);
@@ -171,10 +190,7 @@ export async function registerRoutes(
     } catch (err) { next(err); }
   });
 
-  app.post("/api/v1/verify", upload.fields([
-    { name: "file1", maxCount: 1 },
-    { name: "file2", maxCount: 1 },
-  ]), async (req, res, next) => {
+  app.post("/api/v1/verify", upload.any(), async (req, res, next) => {
     try {
       const apiKey = req.headers["x-api-key"] as string;
       if (!apiKey) return res.status(401).json({ message: "API key required (X-API-Key header)" });
@@ -182,10 +198,7 @@ export async function registerRoutes(
       const user = await storage.getUserByApiKey(apiKey);
       if (!user) return res.status(401).json({ message: "Invalid API key" });
 
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-      if (!files.file1?.[0] || !files.file2?.[0]) {
-        return res.status(400).json({ message: "Two PDF files required (file1, file2)" });
-      }
+      const files = req.files as Express.Multer.File[];
 
       const templateId = req.body.templateId;
       if (!templateId) return res.status(400).json({ message: "Template ID required" });
@@ -196,9 +209,21 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Access denied - template belongs to another user" });
       }
 
+      const fileSlotCount = template.fileSlotCount || 2;
+      const fileBuffers = new Map<number, Buffer>();
+      const fileNames: Record<string, string> = {};
+
+      for (let slot = 1; slot <= fileSlotCount; slot++) {
+        const file = files.find(f => f.fieldname === `file${slot}`);
+        if (!file) {
+          return res.status(400).json({ message: `File for slot ${slot} (file${slot}) is required` });
+        }
+        fileBuffers.set(slot, file.buffer);
+        fileNames[`slot${slot}`] = file.originalname;
+      }
+
       const result = await verifySignatures(
-        files.file1[0].buffer,
-        files.file2[0].buffer,
+        fileBuffers,
         template.maskRegions,
         template.matchMode,
         template.dpi || 200
@@ -209,8 +234,9 @@ export async function registerRoutes(
         userId: user.id,
         confidenceScore: result.confidenceScore,
         results: result,
-        file1Name: files.file1[0].originalname,
-        file2Name: files.file2[0].originalname,
+        file1Name: fileNames["slot1"] || "",
+        file2Name: fileNames["slot2"] || "",
+        fileNames,
       });
 
       res.json({
@@ -219,8 +245,7 @@ export async function registerRoutes(
         matchMode: result.matchMode,
         bestMatch: result.bestMatch,
         comparisons: result.comparisons,
-        signature1Image: result.signature1Image,
-        signature2Image: result.signature2Image,
+        signatureImages: result.signatureImages,
       });
     } catch (err) { next(err); }
   });

@@ -8,24 +8,28 @@ A web-based signature verification platform that allows users to create mask tem
 - **Backend**: Express.js + TypeScript
 - **Database**: PostgreSQL via Drizzle ORM
 - **Auth**: Passport.js with local strategy, session-based
-- **PDF Processing**: pdfjs-dist for rendering, canvas for image manipulation
+- **PDF Processing**: poppler (pdftoppm/pdfinfo) for PDF-to-image conversion
 - **Image Processing**: sharp for PNG generation, custom TypeScript implementation of OpenCV-style algorithms
 
 ## Key Features
 1. **User Auth**: Login/register with session management, first user becomes admin
-2. **Template Creation**: Upload PDF, draw mask regions over signature areas, save as reusable templates
-3. **Signature Verification**: Upload two PDFs, apply template masks, compare extracted signatures
-4. **API Access**: REST API with API key auth for programmatic verification
-5. **Admin Panel**: User management, role assignment
+2. **Template Creation**: Upload PDF, draw mask regions with file slot assignment, save as reusable templates
+3. **Template Editing**: Edit existing templates (regions, settings, file slots)
+4. **Signature Verification**: Upload N PDFs (one per file slot), apply corresponding mask regions, compare extracted signatures across all pairs
+5. **API Access**: REST API with API key auth for programmatic verification
+6. **Admin Panel**: User management, role assignment
 
 ## Data Model
 - `users`: id, username, password (hashed), role (admin/user), apiKey
-- `templates`: id, name, description, userId, maskRegions (JSON), dpi, matchMode
-- `verifications`: id, templateId, userId, confidenceScore, results (JSON), file1Name, file2Name
+- `templates`: id, name, description, userId, maskRegions (JSON with fileSlot), fileSlotCount, dpi, matchMode
+- `verifications`: id, templateId, userId, confidenceScore, results (JSON), fileNames (JSON), file1Name, file2Name
+
+## Mask Regions & File Slots
+Each mask region has a `fileSlot` (1-indexed) indicating which uploaded file it applies to. Templates can have 2-5 file slots. When verifying, users upload one PDF per slot. Each file is scanned using only the regions assigned to its slot.
 
 ## Signature Processing Pipeline
 Port of Python OpenCV code to TypeScript:
-1. PDF page → grayscale image (via pdfjs-dist + canvas)
+1. PDF page → grayscale image (via poppler pdftoppm + sharp)
 2. Crop mask region from page
 3. Adaptive thresholding (Gaussian)
 4. Remove horizontal/vertical lines
@@ -41,7 +45,20 @@ Port of Python OpenCV code to TypeScript:
 - **vacation**: 1.4x multiplier
 
 ## API Endpoint
-`POST /api/v1/verify` - multipart form with X-API-Key header, templateId, file1, file2
+`POST /api/v1/verify` - multipart form with X-API-Key header, templateId, file1..fileN (one per slot)
 
 ## Key Dependencies
-- pdfjs-dist, canvas, sharp, multer, passport, passport-local, express-session, connect-pg-simple, bcrypt, uuid
+- sharp, multer, passport, passport-local, express-session, connect-pg-simple, bcrypt, uuid
+- System: poppler_utils (pdftoppm, pdfinfo), util-linux
+
+## Pages
+- `/` - Dashboard
+- `/templates` - Templates list
+- `/templates/new` - Create template
+- `/templates/:id` - Template detail + API docs
+- `/templates/:id/edit` - Edit template
+- `/verify` - Verify signatures
+- `/verifications` - Verification history
+- `/verifications/:id` - Verification detail
+- `/admin/users` - Admin user management
+- `/api-docs` - API documentation

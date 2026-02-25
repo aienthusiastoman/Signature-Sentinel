@@ -32,6 +32,18 @@ export default function VerificationDetail() {
 
   const resultData = verification.results as any;
   const score = verification.confidenceScore || 0;
+  const fileNames = (verification as any).fileNames as Record<string, string> | null;
+
+  const getFileName = (slot: number) => {
+    if (fileNames && fileNames[`slot${slot}`]) return fileNames[`slot${slot}`];
+    if (slot === 1) return verification.file1Name || `File ${slot}`;
+    if (slot === 2) return verification.file2Name || `File ${slot}`;
+    return `File ${slot}`;
+  };
+
+  const signatureImages = resultData?.signatureImages || {};
+  const legacySig1 = resultData?.signature1Image;
+  const legacySig2 = resultData?.signature2Image;
 
   return (
     <div className="space-y-6" data-testid="verification-detail-page">
@@ -70,7 +82,7 @@ export default function VerificationDetail() {
                   <div className="h-12 w-12 rounded-md bg-primary/10 flex items-center justify-center mx-auto mb-1">
                     <FileText className="h-6 w-6 text-primary" />
                   </div>
-                  <p className="text-sm font-medium">{verification.file1Name}</p>
+                  <p className="text-sm font-medium">{getFileName(resultData.bestMatch.file1Slot || 1)}</p>
                   <p className="text-xs text-muted-foreground">Page {resultData.bestMatch.file1Page}</p>
                 </div>
                 <ArrowRight className="h-6 w-6 text-muted-foreground" />
@@ -78,27 +90,38 @@ export default function VerificationDetail() {
                   <div className="h-12 w-12 rounded-md bg-primary/10 flex items-center justify-center mx-auto mb-1">
                     <FileText className="h-6 w-6 text-primary" />
                   </div>
-                  <p className="text-sm font-medium">{verification.file2Name}</p>
+                  <p className="text-sm font-medium">{getFileName(resultData.bestMatch.file2Slot || 2)}</p>
                   <p className="text-xs text-muted-foreground">Page {resultData.bestMatch.file2Page}</p>
                 </div>
               </div>
             )}
 
-            {(resultData?.signature1Image || resultData?.signature2Image) && (
+            {(Object.keys(signatureImages).length > 0 || legacySig1 || legacySig2) && (
               <div className="space-y-3 pt-2">
                 <p className="text-sm font-medium text-center">Signature Snapshots</p>
                 <div className="grid grid-cols-2 gap-4">
-                  {resultData.signature1Image && (
-                    <div className="border rounded-md p-3 bg-white">
-                      <p className="text-xs text-center text-muted-foreground mb-2">Document 1</p>
-                      <img src={resultData.signature1Image} alt="Signature 1" className="w-full" data-testid="img-signature-1" />
-                    </div>
-                  )}
-                  {resultData.signature2Image && (
-                    <div className="border rounded-md p-3 bg-white">
-                      <p className="text-xs text-center text-muted-foreground mb-2">Document 2</p>
-                      <img src={resultData.signature2Image} alt="Signature 2" className="w-full" data-testid="img-signature-2" />
-                    </div>
+                  {Object.keys(signatureImages).length > 0 ? (
+                    Object.entries(signatureImages).map(([key, img]) => (
+                      <div key={key} className="border rounded-md p-3 bg-white">
+                        <p className="text-xs text-center text-muted-foreground mb-2">{key.replace("slot", "File ")}</p>
+                        <img src={img as string} alt={`Signature ${key}`} className="w-full" data-testid={`img-signature-${key}`} />
+                      </div>
+                    ))
+                  ) : (
+                    <>
+                      {legacySig1 && (
+                        <div className="border rounded-md p-3 bg-white">
+                          <p className="text-xs text-center text-muted-foreground mb-2">Document 1</p>
+                          <img src={legacySig1} alt="Signature 1" className="w-full" data-testid="img-signature-1" />
+                        </div>
+                      )}
+                      {legacySig2 && (
+                        <div className="border rounded-md p-3 bg-white">
+                          <p className="text-xs text-center text-muted-foreground mb-2">Document 2</p>
+                          <img src={legacySig2} alt="Signature 2" className="w-full" data-testid="img-signature-2" />
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -112,14 +135,25 @@ export default function VerificationDetail() {
               <CardTitle className="text-lg">Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Document 1</p>
-                <p className="text-sm font-medium truncate">{verification.file1Name}</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground uppercase tracking-wider">Document 2</p>
-                <p className="text-sm font-medium truncate">{verification.file2Name}</p>
-              </div>
+              {fileNames ? (
+                Object.entries(fileNames).map(([key, name]) => (
+                  <div key={key} className="space-y-1">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">{key.replace("slot", "Document ")}</p>
+                    <p className="text-sm font-medium truncate">{name}</p>
+                  </div>
+                ))
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Document 1</p>
+                    <p className="text-sm font-medium truncate">{verification.file1Name}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider">Document 2</p>
+                    <p className="text-sm font-medium truncate">{verification.file2Name}</p>
+                  </div>
+                </>
+              )}
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Date</p>
                 <div className="flex items-center gap-1.5">
@@ -147,7 +181,9 @@ export default function VerificationDetail() {
                 <div className="space-y-2">
                   {resultData.comparisons.map((c: any, i: number) => (
                     <div key={i} className="flex items-center justify-between gap-2 p-2 border rounded-md text-xs" data-testid={`comparison-row-${i}`}>
-                      <span className="font-medium">P{c.file1Page} vs P{c.file2Page}</span>
+                      <span className="font-medium">
+                        {c.slot1 && c.slot2 ? `F${c.slot1} P${c.file1Page} vs F${c.slot2} P${c.file2Page}` : `P${c.file1Page} vs P${c.file2Page}`}
+                      </span>
                       <div className="flex flex-col items-end gap-0.5">
                         <span className="text-muted-foreground">Raw: {c.rawScore.toFixed(1)}%</span>
                         <Badge variant={c.adjustedScore >= 70 ? "default" : "secondary"} className="text-xs">

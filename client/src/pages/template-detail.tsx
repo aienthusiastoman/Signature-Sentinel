@@ -1,16 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRoute, Link } from "wouter";
+import { useRoute, Link, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
-import { ChevronLeft, Copy, Code, Layers, CheckCircle2, Key } from "lucide-react";
+import { ChevronLeft, Copy, Code, Layers, CheckCircle2, Key, Pencil } from "lucide-react";
 import type { Template } from "@shared/schema";
+
+const SLOT_COLORS = ["#3b82f6", "#ef4444", "#22c55e", "#a855f7", "#f97316"];
 
 export default function TemplateDetail() {
   const [, params] = useRoute("/templates/:id");
+  const [, setLocation] = useLocation();
   const id = params?.id;
   const { user } = useAuth();
   const { toast } = useToast();
@@ -34,22 +37,35 @@ export default function TemplateDetail() {
   }
 
   const regions = template.maskRegions as any[];
+  const fileSlotCount = (template as any).fileSlotCount || 2;
+
+  const fileArgs = Array.from({ length: fileSlotCount }, (_, i) =>
+    `  -F "file${i + 1}=@document${i + 1}.pdf"`
+  ).join(" \\\n");
+
   const curlExample = `curl -X POST "${window.location.origin}/api/v1/verify" \\
   -H "X-API-Key: ${user?.apiKey || 'YOUR_API_KEY'}" \\
   -F "templateId=${template.id}" \\
-  -F "file1=@document1.pdf" \\
-  -F "file2=@document2.pdf"`;
+${fileArgs}`;
+
+  const uniqueSlots = [...new Set(regions.map((r: any) => r.fileSlot || 1))].sort();
 
   return (
     <div className="space-y-6" data-testid="template-detail-page">
-      <div className="flex items-center gap-2 flex-wrap">
-        <Link href="/templates">
-          <Button variant="ghost" size="sm" data-testid="button-back">
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back
-          </Button>
-        </Link>
-        <h1 className="text-2xl font-bold tracking-tight" data-testid="text-template-name">{template.name}</h1>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Link href="/templates">
+            <Button variant="ghost" size="sm" data-testid="button-back">
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              Back
+            </Button>
+          </Link>
+          <h1 className="text-2xl font-bold tracking-tight" data-testid="text-template-name">{template.name}</h1>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setLocation(`/templates/${id}/edit`)} data-testid="button-edit-template">
+          <Pencil className="h-4 w-4 mr-1" />
+          Edit Template
+        </Button>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -76,10 +92,14 @@ export default function TemplateDetail() {
                 <Badge variant="secondary">{template.dpi}</Badge>
               </div>
               <div className="space-y-1">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider">File Slots</p>
+                <Badge variant="secondary">{fileSlotCount} documents</Badge>
+              </div>
+              <div className="space-y-1">
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Regions</p>
                 <Badge variant="secondary">{regions.length}</Badge>
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 col-span-2">
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Created</p>
                 <p className="text-sm">{template.createdAt ? new Date(template.createdAt).toLocaleDateString() : ""}</p>
               </div>
@@ -108,16 +128,28 @@ export default function TemplateDetail() {
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground uppercase tracking-wider">Mask Regions</p>
               <div className="space-y-2">
-                {regions.map((r: any, i: number) => (
-                  <div key={i} className="p-3 border rounded-md text-sm" data-testid={`region-detail-${i}`}>
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-medium">Page {r.pageNumber}</span>
-                      <span className="text-muted-foreground text-xs">
-                        ({Math.round(r.x)}, {Math.round(r.y)}) {Math.round(r.width)}x{Math.round(r.height)}
-                      </span>
+                {uniqueSlots.map((slot: number) => {
+                  const slotRegions = regions.filter((r: any) => (r.fileSlot || 1) === slot);
+                  const color = SLOT_COLORS[(slot - 1) % SLOT_COLORS.length];
+                  return (
+                    <div key={slot}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="h-3 w-3 rounded-full" style={{ backgroundColor: color }} />
+                        <span className="text-xs font-medium">File {slot}</span>
+                      </div>
+                      {slotRegions.map((r: any, i: number) => (
+                        <div key={i} className="p-2 border rounded-md text-sm ml-5 mb-1" data-testid={`region-detail-${slot}-${i}`}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="font-medium">Page {r.pageNumber}</span>
+                            <span className="text-muted-foreground text-xs">
+                              ({Math.round(r.x)}, {Math.round(r.y)}) {Math.round(r.width)}x{Math.round(r.height)}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -196,12 +228,16 @@ export default function TemplateDetail() {
   "confidenceScore": 85.5,
   "matchMode": "${template.matchMode}",
   "bestMatch": {
+    "file1Slot": 1,
+    "file2Slot": 2,
     "file1Page": 1,
-    "file2Page": 6
+    "file2Page": 1
   },
   "comparisons": [...],
-  "signature1Image": "data:image/png;base64,...",
-  "signature2Image": "data:image/png;base64,..."
+  "signatureImages": {
+    "slot1": "data:image/png;base64,...",
+    "slot2": "data:image/png;base64,..."
+  }
 }`}
               </pre>
             </div>

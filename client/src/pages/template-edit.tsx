@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useLocation, useRoute } from "wouter";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Upload, ChevronLeft, ChevronRight, Trash2, Save, MousePointer2, Layers, Plus, Minus } from "lucide-react";
-import type { MaskRegion } from "@shared/schema";
+import type { MaskRegion, Template } from "@shared/schema";
 
 interface DrawingRect {
   startX: number;
@@ -32,10 +33,13 @@ function getSlotColor(slot: number) {
   return SLOT_COLORS[(slot - 1) % SLOT_COLORS.length];
 }
 
-export default function TemplateCreate() {
+export default function TemplateEdit() {
   const [, setLocation] = useLocation();
+  const [, params] = useRoute("/templates/:id/edit");
+  const id = params?.id;
   const { toast } = useToast();
 
+  const [initialized, setInitialized] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [matchMode, setMatchMode] = useState("relaxed");
@@ -57,9 +61,30 @@ export default function TemplateCreate() {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  const { data: template, isLoading } = useQuery<Template>({
+    queryKey: ["/api/templates", id],
+    enabled: !!id,
+  });
+
+  useEffect(() => {
+    if (template && !initialized) {
+      setName(template.name);
+      setDescription(template.description || "");
+      setMatchMode(template.matchMode);
+      setDpi(template.dpi || 200);
+      setFileSlotCount(template.fileSlotCount || 2);
+      const existingRegions = (template.maskRegions || []).map(r => ({
+        ...r,
+        fileSlot: (r as any).fileSlot || 1,
+      }));
+      setRegions(existingRegions);
+      setInitialized(true);
+    }
+  }, [template, initialized]);
+
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/templates", {
+      const res = await apiRequest("PATCH", `/api/templates/${id}`, {
         name,
         description,
         matchMode,
@@ -71,8 +96,9 @@ export default function TemplateCreate() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/templates"] });
-      toast({ title: "Template created" });
-      setLocation("/templates");
+      queryClient.invalidateQueries({ queryKey: ["/api/templates", id] });
+      toast({ title: "Template updated" });
+      setLocation(`/templates/${id}`);
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -119,7 +145,6 @@ export default function TemplateCreate() {
     if (!file) return;
     setPdfFile(file);
     setCurrentPage(1);
-    setRegions([]);
     try {
       await loadPageCount(file);
       await loadPageImage(file, 1);
@@ -243,14 +268,27 @@ export default function TemplateCreate() {
     return true;
   };
 
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
+  if (!template) {
+    return <p className="text-muted-foreground">Template not found</p>;
+  }
+
   return (
-    <div className="space-y-6" data-testid="template-create-page">
+    <div className="space-y-6" data-testid="template-edit-page">
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={() => setLocation("/templates")} data-testid="button-back">
+        <Button variant="ghost" size="sm" onClick={() => setLocation(`/templates/${id}`)} data-testid="button-back">
           <ChevronLeft className="h-4 w-4 mr-1" />
           Back
         </Button>
-        <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Create Template</h1>
+        <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Edit Template</h1>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -261,7 +299,7 @@ export default function TemplateCreate() {
                 <MousePointer2 className="h-5 w-5" />
                 Mask Region Editor
               </CardTitle>
-              <CardDescription>Upload a sample PDF and draw rectangles over signature areas for each file slot</CardDescription>
+              <CardDescription>Upload a sample PDF to adjust mask regions, or edit settings without uploading</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2 flex-wrap">
@@ -287,8 +325,8 @@ export default function TemplateCreate() {
               {!pdfFile ? (
                 <label className="flex flex-col items-center justify-center border-2 border-dashed rounded-md p-12 cursor-pointer hover:border-primary/50 transition-colors" data-testid="upload-area">
                   <Upload className="h-10 w-10 text-muted-foreground mb-3" />
-                  <span className="text-sm font-medium">Upload a sample PDF document</span>
-                  <span className="text-xs text-muted-foreground mt-1">This PDF is used as a visual reference to define mask regions</span>
+                  <span className="text-sm font-medium">Upload a sample PDF to adjust regions</span>
+                  <span className="text-xs text-muted-foreground mt-1">Optional - you can also just edit the settings below</span>
                   <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} data-testid="input-pdf-upload" />
                 </label>
               ) : (
@@ -299,35 +337,13 @@ export default function TemplateCreate() {
                       <Badge variant="secondary">Page {currentPage} of {pageCount}</Badge>
                     </div>
                     <div className="flex items-center gap-1">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={currentPage <= 1}
-                        onClick={() => setCurrentPage(p => p - 1)}
-                        data-testid="button-prev-page"
-                      >
+                      <Button variant="secondary" size="sm" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} data-testid="button-prev-page">
                         <ChevronLeft className="h-4 w-4" />
                       </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={currentPage >= pageCount}
-                        onClick={() => setCurrentPage(p => p + 1)}
-                        data-testid="button-next-page"
-                      >
+                      <Button variant="secondary" size="sm" disabled={currentPage >= pageCount} onClick={() => setCurrentPage(p => p + 1)} data-testid="button-next-page">
                         <ChevronRight className="h-4 w-4" />
                       </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setPdfFile(null);
-                          setPageImage(null);
-                          setPageCount(0);
-                          setRegions([]);
-                        }}
-                        data-testid="button-remove-pdf"
-                      >
+                      <Button variant="ghost" size="sm" onClick={() => { setPdfFile(null); setPageImage(null); setPageCount(0); }} data-testid="button-remove-pdf">
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </div>
@@ -340,14 +356,7 @@ export default function TemplateCreate() {
                       </div>
                     ) : pageImage ? (
                       <>
-                        <img
-                          ref={imgRef}
-                          src={pageImage}
-                          alt="PDF page"
-                          className="hidden"
-                          onLoad={handleImageLoad}
-                          crossOrigin="anonymous"
-                        />
+                        <img ref={imgRef} src={pageImage} alt="PDF page" className="hidden" onLoad={handleImageLoad} crossOrigin="anonymous" />
                         <canvas
                           ref={canvasRef}
                           className="w-full h-auto cursor-crosshair rounded-md"
@@ -360,10 +369,6 @@ export default function TemplateCreate() {
                       </>
                     ) : null}
                   </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Select a file slot above, then draw rectangles on the page to mark where signatures appear in that file type. Each slot represents a different document you'll upload during verification.
-                  </p>
                 </>
               )}
             </CardContent>
@@ -378,50 +383,20 @@ export default function TemplateCreate() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="name">Name</Label>
-                <Input
-                  id="name"
-                  placeholder="e.g., Insurance Form Signature"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  data-testid="input-template-name"
-                />
+                <Input id="name" value={name} onChange={e => setName(e.target.value)} data-testid="input-template-name" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
-                  placeholder="Optional description..."
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  className="resize-none"
-                  data-testid="input-template-description"
-                />
+                <Textarea id="description" value={description} onChange={e => setDescription(e.target.value)} className="resize-none" data-testid="input-template-description" />
               </div>
               <div className="space-y-2">
                 <Label>File Slots</Label>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    disabled={fileSlotCount <= 2}
-                    onClick={() => {
-                      const newCount = fileSlotCount - 1;
-                      setFileSlotCount(newCount);
-                      setRegions(regions.filter(r => r.fileSlot <= newCount));
-                      if (activeSlot > newCount) setActiveSlot(newCount);
-                    }}
-                    data-testid="button-decrease-slots"
-                  >
+                  <Button variant="outline" size="icon" disabled={fileSlotCount <= 2} onClick={() => { const n = fileSlotCount - 1; setFileSlotCount(n); setRegions(regions.filter(r => r.fileSlot <= n)); if (activeSlot > n) setActiveSlot(n); }} data-testid="button-decrease-slots">
                     <Minus className="h-4 w-4" />
                   </Button>
                   <span className="text-sm font-medium w-8 text-center" data-testid="text-slot-count">{fileSlotCount}</span>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    disabled={fileSlotCount >= 5}
-                    onClick={() => setFileSlotCount(fileSlotCount + 1)}
-                    data-testid="button-increase-slots"
-                  >
+                  <Button variant="outline" size="icon" disabled={fileSlotCount >= 5} onClick={() => setFileSlotCount(fileSlotCount + 1)} data-testid="button-increase-slots">
                     <Plus className="h-4 w-4" />
                   </Button>
                   <span className="text-xs text-muted-foreground">documents to compare</span>
@@ -430,27 +405,18 @@ export default function TemplateCreate() {
               <div className="space-y-2">
                 <Label>Match Mode</Label>
                 <Select value={matchMode} onValueChange={setMatchMode}>
-                  <SelectTrigger data-testid="select-match-mode">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger data-testid="select-match-mode"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="strict">Strict</SelectItem>
                     <SelectItem value="relaxed">Relaxed</SelectItem>
                     <SelectItem value="vacation">Vacation</SelectItem>
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
-                  {matchMode === "strict" ? "No adjustment to raw score" :
-                   matchMode === "relaxed" ? "1.25x multiplier for flexibility" :
-                   "1.4x multiplier for maximum flexibility"}
-                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="dpi">DPI</Label>
                 <Select value={dpi.toString()} onValueChange={v => setDpi(parseInt(v))}>
-                  <SelectTrigger data-testid="select-dpi">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger data-testid="select-dpi"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="150">150 DPI</SelectItem>
                     <SelectItem value="200">200 DPI</SelectItem>
@@ -471,9 +437,7 @@ export default function TemplateCreate() {
             </CardHeader>
             <CardContent>
               {regions.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  Draw on the PDF to add regions
-                </p>
+                <p className="text-sm text-muted-foreground text-center py-4">No mask regions defined</p>
               ) : (
                 <div className="space-y-2">
                   {Array.from({ length: fileSlotCount }, (_, i) => i + 1).map(slot => {
@@ -486,22 +450,15 @@ export default function TemplateCreate() {
                           <div className="h-3 w-3 rounded-full" style={{ backgroundColor: color.stroke }} />
                           <span className="text-xs font-medium">File {slot}</span>
                         </div>
-                        {slotRegions.map((r, i) => {
-                          const globalIdx = regions.indexOf(r);
+                        {slotRegions.map((r) => {
+                          const idx = regions.indexOf(r);
                           return (
-                            <div key={globalIdx} className="flex items-center justify-between gap-2 p-2 rounded-md border text-sm ml-5 mb-1" data-testid={`region-item-${globalIdx}`}>
+                            <div key={idx} className="flex items-center justify-between gap-2 p-2 rounded-md border text-sm ml-5 mb-1" data-testid={`region-item-${idx}`}>
                               <div>
                                 <span className="font-medium">Page {r.pageNumber}</span>
-                                <span className="text-muted-foreground ml-2">
-                                  {Math.round(r.width)}x{Math.round(r.height)}
-                                </span>
+                                <span className="text-muted-foreground ml-2">{Math.round(r.width)}x{Math.round(r.height)}</span>
                               </div>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setRegions(regions.filter((_, j) => j !== globalIdx))}
-                                data-testid={`button-remove-region-${globalIdx}`}
-                              >
+                              <Button variant="ghost" size="icon" onClick={() => setRegions(regions.filter((_, j) => j !== idx))} data-testid={`button-remove-region-${idx}`}>
                                 <Trash2 className="h-3.5 w-3.5 text-destructive" />
                               </Button>
                             </div>
@@ -514,9 +471,7 @@ export default function TemplateCreate() {
               )}
 
               {!hasRegionsForAllSlots() && regions.length > 0 && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                  Each file slot needs at least one mask region
-                </p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">Each file slot needs at least one mask region</p>
               )}
 
               <Button
@@ -526,7 +481,7 @@ export default function TemplateCreate() {
                 data-testid="button-save-template"
               >
                 <Save className="mr-2 h-4 w-4" />
-                {saveMutation.isPending ? "Saving..." : "Save Template"}
+                {saveMutation.isPending ? "Saving..." : "Update Template"}
               </Button>
             </CardContent>
           </Card>
