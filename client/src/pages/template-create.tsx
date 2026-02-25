@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { Upload, ChevronLeft, ChevronRight, Trash2, Save, MousePointer2, Layers, Plus, Minus } from "lucide-react";
+import { Upload, ChevronLeft, ChevronRight, Trash2, Save, MousePointer2, Layers, Plus, Minus, FileText } from "lucide-react";
 import type { MaskRegion } from "@shared/schema";
 
 interface DrawingRect {
@@ -18,6 +18,14 @@ interface DrawingRect {
   startY: number;
   endX: number;
   endY: number;
+}
+
+interface SlotPdfState {
+  file: File | null;
+  pageCount: number;
+  currentPage: number;
+  pageImage: string | null;
+  loadingPage: boolean;
 }
 
 const SLOT_COLORS = [
@@ -43,11 +51,7 @@ export default function TemplateCreate() {
   const [fileSlotCount, setFileSlotCount] = useState(2);
   const [activeSlot, setActiveSlot] = useState(1);
 
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const [pageCount, setPageCount] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageImage, setPageImage] = useState<string | null>(null);
-  const [loadingPage, setLoadingPage] = useState(false);
+  const [slotPdfs, setSlotPdfs] = useState<Record<number, SlotPdfState>>({});
 
   const [regions, setRegions] = useState<MaskRegion[]>([]);
   const [drawing, setDrawing] = useState<DrawingRect | null>(null);
@@ -55,7 +59,19 @@ export default function TemplateCreate() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+
+  const getSlotPdf = (slot: number): SlotPdfState => {
+    return slotPdfs[slot] || { file: null, pageCount: 0, currentPage: 1, pageImage: null, loadingPage: false };
+  };
+
+  const updateSlotPdf = (slot: number, update: Partial<SlotPdfState>) => {
+    setSlotPdfs(prev => ({
+      ...prev,
+      [slot]: { ...getSlotPdf(slot), ...update },
+    }));
+  };
+
+  const currentSlotPdf = getSlotPdf(activeSlot);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -79,21 +95,8 @@ export default function TemplateCreate() {
     },
   });
 
-  const loadPageCount = useCallback(async (file: File) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch("/api/pdf/page-count", {
-      method: "POST",
-      body: formData,
-      credentials: "include",
-    });
-    if (!res.ok) throw new Error("Failed to get page count");
-    const data = await res.json();
-    setPageCount(data.pageCount);
-  }, []);
-
-  const loadPageImage = useCallback(async (file: File, page: number) => {
-    setLoadingPage(true);
+  const loadPageImage = useCallback(async (file: File, page: number, slot: number) => {
+    updateSlotPdf(slot, { loadingPage: true });
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -106,33 +109,42 @@ export default function TemplateCreate() {
       if (!res.ok) throw new Error("Failed to render page");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      setPageImage(url);
+      updateSlotPdf(slot, { pageImage: url, loadingPage: false });
     } catch {
       toast({ title: "Error", description: "Failed to render PDF page", variant: "destructive" });
-    } finally {
-      setLoadingPage(false);
+      updateSlotPdf(slot, { loadingPage: false });
     }
   }, [toast]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, slot: number) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setPdfFile(file);
-    setCurrentPage(1);
-    setRegions([]);
     try {
-      await loadPageCount(file);
-      await loadPageImage(file, 1);
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/pdf/page-count", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to get page count");
+      const data = await res.json();
+
+      updateSlotPdf(slot, { file, pageCount: data.pageCount, currentPage: 1, pageImage: null });
+      setRegions(prev => prev.filter(r => r.fileSlot !== slot));
+
+      await loadPageImage(file, 1, slot);
     } catch {
       toast({ title: "Error", description: "Failed to load PDF", variant: "destructive" });
     }
   };
 
-  useEffect(() => {
-    if (pdfFile && currentPage > 0) {
-      loadPageImage(pdfFile, currentPage);
-    }
-  }, [currentPage, pdfFile, loadPageImage]);
+  const handlePageChange = (slot: number, newPage: number) => {
+    const slotState = getSlotPdf(slot);
+    if (!slotState.file) return;
+    updateSlotPdf(slot, { currentPage: newPage });
+    loadPageImage(slotState.file, newPage, slot);
+  };
 
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -144,10 +156,10 @@ export default function TemplateCreate() {
 
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
-
     ctx.drawImage(img, 0, 0);
 
-    const pageRegions = regions.filter(r => r.pageNumber === currentPage);
+    const slotState = getSlotPdf(activeSlot);
+    const pageRegions = regions.filter(r => r.fileSlot === activeSlot && r.pageNumber === slotState.currentPage);
     for (const region of pageRegions) {
       const color = getSlotColor(region.fileSlot);
       ctx.fillStyle = color.fill;
@@ -156,7 +168,7 @@ export default function TemplateCreate() {
       ctx.lineWidth = 2;
       ctx.strokeRect(region.x, region.y, region.width, region.height);
 
-      const label = `File ${region.fileSlot}${region.label ? ` - ${region.label}` : ""}`;
+      const label = region.label || "";
       ctx.fillStyle = color.text;
       ctx.font = "bold 14px sans-serif";
       ctx.fillText(label, region.x + 4, region.y + 16);
@@ -177,7 +189,7 @@ export default function TemplateCreate() {
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
     }
-  }, [regions, currentPage, drawing, activeSlot]);
+  }, [regions, activeSlot, drawing, slotPdfs]);
 
   useEffect(() => {
     drawCanvas();
@@ -217,9 +229,10 @@ export default function TemplateCreate() {
     const h = Math.abs(drawing.endY - drawing.startY);
 
     if (w > 10 && h > 10) {
+      const slotState = getSlotPdf(activeSlot);
       const slotRegions = regions.filter(r => r.fileSlot === activeSlot);
       const newRegion: MaskRegion = {
-        pageNumber: currentPage,
+        pageNumber: slotState.currentPage,
         x: Math.round(x),
         y: Math.round(y),
         width: Math.round(w),
@@ -261,14 +274,14 @@ export default function TemplateCreate() {
                 <MousePointer2 className="h-5 w-5" />
                 Mask Region Editor
               </CardTitle>
-              <CardDescription>Upload a sample PDF and draw rectangles over signature areas for each file slot</CardDescription>
+              <CardDescription>Upload a sample PDF for each file slot and draw rectangles over signature areas</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2 flex-wrap">
-                <Label className="text-sm font-medium">Drawing for:</Label>
                 {Array.from({ length: fileSlotCount }, (_, i) => i + 1).map(slot => {
                   const color = getSlotColor(slot);
                   const count = regions.filter(r => r.fileSlot === slot).length;
+                  const hasPdf = !!getSlotPdf(slot).file;
                   return (
                     <Button
                       key={slot}
@@ -278,32 +291,36 @@ export default function TemplateCreate() {
                       style={activeSlot === slot ? { backgroundColor: color.stroke } : { borderColor: color.stroke, color: color.text }}
                       data-testid={`button-slot-${slot}`}
                     >
-                      File {slot} ({count})
+                      <FileText className="h-3.5 w-3.5 mr-1" />
+                      File {slot}
+                      {hasPdf ? ` (${count})` : ""}
                     </Button>
                   );
                 })}
               </div>
 
-              {!pdfFile ? (
-                <label className="flex flex-col items-center justify-center border-2 border-dashed rounded-md p-12 cursor-pointer hover:border-primary/50 transition-colors" data-testid="upload-area">
+              {!currentSlotPdf.file ? (
+                <label className="flex flex-col items-center justify-center border-2 border-dashed rounded-md p-12 cursor-pointer hover:border-primary/50 transition-colors" style={{ borderColor: getSlotColor(activeSlot).stroke + "40" }} data-testid={`upload-area-slot-${activeSlot}`}>
                   <Upload className="h-10 w-10 text-muted-foreground mb-3" />
-                  <span className="text-sm font-medium">Upload a sample PDF document</span>
-                  <span className="text-xs text-muted-foreground mt-1">This PDF is used as a visual reference to define mask regions</span>
-                  <input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} data-testid="input-pdf-upload" />
+                  <span className="text-sm font-medium">Upload a sample PDF for File {activeSlot}</span>
+                  <span className="text-xs text-muted-foreground mt-1">This document type will use the mask regions you draw here</span>
+                  <input type="file" accept=".pdf" className="hidden" onChange={e => handleFileUpload(e, activeSlot)} data-testid={`input-pdf-upload-slot-${activeSlot}`} />
                 </label>
               ) : (
                 <>
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-2">
-                      <Badge variant="secondary">{pdfFile.name}</Badge>
-                      <Badge variant="secondary">Page {currentPage} of {pageCount}</Badge>
+                      <Badge variant="secondary" style={{ borderColor: getSlotColor(activeSlot).stroke, color: getSlotColor(activeSlot).text }}>
+                        File {activeSlot}: {currentSlotPdf.file.name}
+                      </Badge>
+                      <Badge variant="secondary">Page {currentSlotPdf.currentPage} of {currentSlotPdf.pageCount}</Badge>
                     </div>
                     <div className="flex items-center gap-1">
                       <Button
                         variant="secondary"
                         size="sm"
-                        disabled={currentPage <= 1}
-                        onClick={() => setCurrentPage(p => p - 1)}
+                        disabled={currentSlotPdf.currentPage <= 1}
+                        onClick={() => handlePageChange(activeSlot, currentSlotPdf.currentPage - 1)}
                         data-testid="button-prev-page"
                       >
                         <ChevronLeft className="h-4 w-4" />
@@ -311,8 +328,8 @@ export default function TemplateCreate() {
                       <Button
                         variant="secondary"
                         size="sm"
-                        disabled={currentPage >= pageCount}
-                        onClick={() => setCurrentPage(p => p + 1)}
+                        disabled={currentSlotPdf.currentPage >= currentSlotPdf.pageCount}
+                        onClick={() => handlePageChange(activeSlot, currentSlotPdf.currentPage + 1)}
                         data-testid="button-next-page"
                       >
                         <ChevronRight className="h-4 w-4" />
@@ -321,10 +338,8 @@ export default function TemplateCreate() {
                         variant="ghost"
                         size="sm"
                         onClick={() => {
-                          setPdfFile(null);
-                          setPageImage(null);
-                          setPageCount(0);
-                          setRegions([]);
+                          updateSlotPdf(activeSlot, { file: null, pageImage: null, pageCount: 0, currentPage: 1 });
+                          setRegions(prev => prev.filter(r => r.fileSlot !== activeSlot));
                         }}
                         data-testid="button-remove-pdf"
                       >
@@ -333,16 +348,16 @@ export default function TemplateCreate() {
                     </div>
                   </div>
 
-                  <div ref={containerRef} className="relative border rounded-md bg-muted/50" style={{ minHeight: "400px" }}>
-                    {loadingPage ? (
+                  <div className="relative border rounded-md bg-muted/50" style={{ minHeight: "400px", borderColor: getSlotColor(activeSlot).stroke + "30" }}>
+                    {currentSlotPdf.loadingPage ? (
                       <div className="flex items-center justify-center h-96">
                         <div className="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full" />
                       </div>
-                    ) : pageImage ? (
+                    ) : currentSlotPdf.pageImage ? (
                       <>
                         <img
                           ref={imgRef}
-                          src={pageImage}
+                          src={currentSlotPdf.pageImage}
                           alt="PDF page"
                           className="hidden"
                           onLoad={handleImageLoad}
@@ -362,7 +377,7 @@ export default function TemplateCreate() {
                   </div>
 
                   <p className="text-xs text-muted-foreground">
-                    Select a file slot above, then draw rectangles on the page to mark where signatures appear in that file type. Each slot represents a different document you'll upload during verification.
+                    Draw rectangles on this page to mark where signatures appear in File {activeSlot} documents. Switch to another file slot tab above to upload and mark a different document type.
                   </p>
                 </>
               )}
@@ -408,6 +423,11 @@ export default function TemplateCreate() {
                       const newCount = fileSlotCount - 1;
                       setFileSlotCount(newCount);
                       setRegions(regions.filter(r => r.fileSlot <= newCount));
+                      setSlotPdfs(prev => {
+                        const next = { ...prev };
+                        delete next[fileSlotCount];
+                        return next;
+                      });
                       if (activeSlot > newCount) setActiveSlot(newCount);
                     }}
                     data-testid="button-decrease-slots"
@@ -472,7 +492,7 @@ export default function TemplateCreate() {
             <CardContent>
               {regions.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">
-                  Draw on the PDF to add regions
+                  Upload PDFs and draw on them to add mask regions
                 </p>
               ) : (
                 <div className="space-y-2">
@@ -486,7 +506,7 @@ export default function TemplateCreate() {
                           <div className="h-3 w-3 rounded-full" style={{ backgroundColor: color.stroke }} />
                           <span className="text-xs font-medium">File {slot}</span>
                         </div>
-                        {slotRegions.map((r, i) => {
+                        {slotRegions.map((r) => {
                           const globalIdx = regions.indexOf(r);
                           return (
                             <div key={globalIdx} className="flex items-center justify-between gap-2 p-2 rounded-md border text-sm ml-5 mb-1" data-testid={`region-item-${globalIdx}`}>
