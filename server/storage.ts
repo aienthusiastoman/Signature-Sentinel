@@ -1,5 +1,5 @@
 import { type User, type InsertUser, type Template, type InsertTemplate, type Verification, type VerificationResult, users, templates, verifications } from "@shared/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 
@@ -38,6 +38,12 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private async setUserContext(userId?: string) {
+    if (userId) {
+      await db.execute(sql`SET LOCAL app.current_user_id = ${userId}`);
+    }
+  }
+
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
