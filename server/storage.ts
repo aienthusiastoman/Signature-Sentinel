@@ -3,11 +3,27 @@ import { eq, desc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-});
+function getDb() {
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
+  return drizzle(pool);
+}
 
-export const db = drizzle(pool);
+let _db: ReturnType<typeof getDb> | null = null;
+
+export function getDatabase() {
+  if (!_db) {
+    _db = getDb();
+  }
+  return _db;
+}
+
+export const db = new Proxy({} as ReturnType<typeof getDb>, {
+  get(_target, prop) {
+    return (getDatabase() as any)[prop];
+  },
+});
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
