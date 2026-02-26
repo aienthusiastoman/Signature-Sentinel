@@ -1,16 +1,4 @@
-import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, timestamp, jsonb, boolean, real } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
-  role: text("role").notNull().default("user"),
-  apiKey: text("api_key"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
 
 export const maskRegionSchema = z.object({
   pageNumber: z.number(),
@@ -25,19 +13,6 @@ export const maskRegionSchema = z.object({
 });
 
 export type MaskRegion = z.infer<typeof maskRegionSchema>;
-
-export const templates = pgTable("templates", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: text("name").notNull(),
-  description: text("description"),
-  userId: varchar("user_id").notNull(),
-  maskRegions: jsonb("mask_regions").notNull().$type<MaskRegion[]>(),
-  sourcePageCount: integer("source_page_count").default(1),
-  fileSlotCount: integer("file_slot_count").default(2),
-  dpi: integer("dpi").default(200),
-  matchMode: text("match_mode").notNull().default("relaxed"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
 
 export const verificationResultSchema = z.object({
   confidenceScore: z.number(),
@@ -61,35 +36,47 @@ export const verificationResultSchema = z.object({
 
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
 
-export const verifications = pgTable("verifications", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  templateId: varchar("template_id").notNull(),
-  userId: varchar("user_id").notNull(),
-  confidenceScore: real("confidence_score"),
-  results: jsonb("results").$type<VerificationResult>(),
-  fileNames: jsonb("file_names").$type<Record<string, string>>(),
-  file1Name: text("file1_name"),
-  file2Name: text("file2_name"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export const insertUserSchema = createInsertSchema(users).pick({
-  username: true,
-  password: true,
-});
-
-export const insertTemplateSchema = createInsertSchema(templates).pick({
-  name: true,
-  description: true,
-  matchMode: true,
-  dpi: true,
-}).extend({
+export const insertTemplateSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional().nullable(),
+  matchMode: z.enum(["relaxed", "strict", "vacation"]).optional(),
+  dpi: z.number().optional().nullable(),
   maskRegions: z.array(maskRegionSchema),
   fileSlotCount: z.number().min(2).optional(),
 });
 
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
-export type Template = typeof templates.$inferSelect;
-export type InsertTemplate = z.infer<typeof insertTemplateSchema>;
-export type Verification = typeof verifications.$inferSelect;
+export type InsertTemplateSchema = z.infer<typeof insertTemplateSchema>;
+
+export interface User {
+  id: string;
+  username: string;
+  password: string;
+  role: string;
+  apiKey: string | null;
+  createdAt: string | null;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  description: string | null;
+  userId: string;
+  maskRegions: MaskRegion[];
+  sourcePageCount: number | null;
+  fileSlotCount: number | null;
+  dpi: number | null;
+  matchMode: string;
+  createdAt: string | null;
+}
+
+export interface Verification {
+  id: string;
+  templateId: string;
+  userId: string;
+  confidenceScore: number | null;
+  results: VerificationResult | null;
+  fileNames: Record<string, string> | null;
+  file1Name: string | null;
+  file2Name: string | null;
+  createdAt: string | null;
+}

@@ -1,38 +1,62 @@
-import { type User, type InsertUser, type Template, type InsertTemplate, type Verification, type VerificationResult, users, templates, verifications } from "@shared/schema";
-import { eq, desc, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
+import { supabase } from "./supabase";
+import type { MaskRegion, VerificationResult } from "@shared/schema";
 
-function getDb() {
-  const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL,
-  });
-  return drizzle(pool);
+export interface User {
+  id: string;
+  username: string;
+  password: string;
+  role: string;
+  apiKey: string | null;
+  createdAt: string | null;
 }
 
-let _db: ReturnType<typeof getDb> | null = null;
-
-export function getDatabase() {
-  if (!_db) {
-    _db = getDb();
-  }
-  return _db;
+export interface Template {
+  id: string;
+  name: string;
+  description: string | null;
+  userId: string;
+  maskRegions: MaskRegion[];
+  sourcePageCount: number | null;
+  fileSlotCount: number | null;
+  dpi: number | null;
+  matchMode: string;
+  createdAt: string | null;
 }
 
-export const db = new Proxy({} as ReturnType<typeof getDb>, {
-  get(_target, prop) {
-    return (getDatabase() as any)[prop];
-  },
-});
+export interface Verification {
+  id: string;
+  templateId: string;
+  userId: string;
+  confidenceScore: number | null;
+  results: VerificationResult | null;
+  fileNames: Record<string, string> | null;
+  file1Name: string | null;
+  file2Name: string | null;
+  createdAt: string | null;
+}
+
+export interface InsertUser {
+  username: string;
+  password: string;
+}
+
+export interface InsertTemplate {
+  name: string;
+  description?: string | null;
+  maskRegions: MaskRegion[];
+  dpi?: number | null;
+  matchMode?: string;
+  fileSlotCount?: number;
+}
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByApiKey(apiKey: string): Promise<User | undefined>;
   createUser(user: InsertUser & { role?: string; apiKey?: string }): Promise<User>;
   getAllUsers(): Promise<User[]>;
   updateUserRole(id: string, role: string): Promise<User | undefined>;
   deleteUser(id: string): Promise<void>;
-  getUserByApiKey(apiKey: string): Promise<User | undefined>;
 
   getTemplates(userId: string): Promise<Template[]>;
   getTemplate(id: string): Promise<Template | undefined>;
@@ -53,72 +77,118 @@ export interface IStorage {
   }): Promise<Verification>;
 }
 
-export class DatabaseStorage implements IStorage {
-  private async setUserContext(userId?: string) {
-    if (userId) {
-      await db.execute(sql`SET LOCAL app.current_user_id = ${userId}`);
-    }
-  }
+function toUser(row: any): User {
+  return {
+    id: row.id,
+    username: row.username,
+    password: row.password,
+    role: row.role,
+    apiKey: row.api_key ?? null,
+    createdAt: row.created_at ?? null,
+  };
+}
 
+function toTemplate(row: any): Template {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? null,
+    userId: row.user_id,
+    maskRegions: row.mask_regions ?? [],
+    sourcePageCount: row.source_page_count ?? null,
+    fileSlotCount: row.file_slot_count ?? null,
+    dpi: row.dpi ?? null,
+    matchMode: row.match_mode ?? "relaxed",
+    createdAt: row.created_at ?? null,
+  };
+}
+
+function toVerification(row: any): Verification {
+  return {
+    id: row.id,
+    templateId: row.template_id,
+    userId: row.user_id,
+    confidenceScore: row.confidence_score ?? null,
+    results: row.results ?? null,
+    fileNames: row.file_names ?? null,
+    file1Name: row.file1_name ?? null,
+    file2Name: row.file2_name ?? null,
+    createdAt: row.created_at ?? null,
+  };
+}
+
+export class DatabaseStorage implements IStorage {
   async getUser(id: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+    const { data, error } = await supabase.from("users").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data ? toUser(data) : undefined;
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.username, username));
-    return user;
-  }
-
-  async createUser(insertUser: InsertUser & { role?: string; apiKey?: string }): Promise<User> {
-    const [user] = await db.insert(users).values({
-      username: insertUser.username,
-      password: insertUser.password,
-      role: insertUser.role || "user",
-      apiKey: insertUser.apiKey,
-    }).returning();
-    return user;
-  }
-
-  async getAllUsers(): Promise<User[]> {
-    return db.select().from(users).orderBy(desc(users.createdAt));
-  }
-
-  async updateUserRole(id: string, role: string): Promise<User | undefined> {
-    const [user] = await db.update(users).set({ role }).where(eq(users.id, id)).returning();
-    return user;
-  }
-
-  async deleteUser(id: string): Promise<void> {
-    await db.delete(users).where(eq(users.id, id));
+    const { data, error } = await supabase.from("users").select("*").eq("username", username).maybeSingle();
+    if (error) throw error;
+    return data ? toUser(data) : undefined;
   }
 
   async getUserByApiKey(apiKey: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.apiKey, apiKey));
-    return user;
+    const { data, error } = await supabase.from("users").select("*").eq("api_key", apiKey).maybeSingle();
+    if (error) throw error;
+    return data ? toUser(data) : undefined;
+  }
+
+  async createUser(insertUser: InsertUser & { role?: string; apiKey?: string }): Promise<User> {
+    const { data, error } = await supabase.from("users").insert({
+      username: insertUser.username,
+      password: insertUser.password,
+      role: insertUser.role || "user",
+      api_key: insertUser.apiKey ?? null,
+    }).select().single();
+    if (error) throw error;
+    return toUser(data);
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map(toUser);
+  }
+
+  async updateUserRole(id: string, role: string): Promise<User | undefined> {
+    const { data, error } = await supabase.from("users").update({ role }).eq("id", id).select().maybeSingle();
+    if (error) throw error;
+    return data ? toUser(data) : undefined;
+  }
+
+  async deleteUser(id: string): Promise<void> {
+    const { error } = await supabase.from("users").delete().eq("id", id);
+    if (error) throw error;
   }
 
   async getTemplates(userId: string): Promise<Template[]> {
-    return db.select().from(templates).where(eq(templates.userId, userId)).orderBy(desc(templates.createdAt));
+    const { data, error } = await supabase.from("templates").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map(toTemplate);
   }
 
   async getTemplate(id: string): Promise<Template | undefined> {
-    const [template] = await db.select().from(templates).where(eq(templates.id, id));
-    return template;
+    const { data, error } = await supabase.from("templates").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data ? toTemplate(data) : undefined;
   }
 
   async createTemplate(data: InsertTemplate & { userId: string }): Promise<Template> {
     const fileSlotCount = Math.max(2, ...data.maskRegions.map(r => r.fileSlot));
-    const [template] = await db.insert(templates).values({
+    const { data: row, error } = await supabase.from("templates").insert({
       name: data.name,
-      description: data.description,
-      userId: data.userId,
-      maskRegions: data.maskRegions,
-      fileSlotCount,
-      dpi: data.dpi || 200,
-      matchMode: data.matchMode || "relaxed",
-    }).returning();
-    return template;
+      description: data.description ?? null,
+      user_id: data.userId,
+      mask_regions: data.maskRegions,
+      file_slot_count: fileSlotCount,
+      dpi: data.dpi ?? 200,
+      match_mode: data.matchMode ?? "relaxed",
+    }).select().single();
+    if (error) throw error;
+    return toTemplate(row);
   }
 
   async updateTemplate(id: string, data: Partial<InsertTemplate>): Promise<Template | undefined> {
@@ -126,28 +196,33 @@ export class DatabaseStorage implements IStorage {
     if (data.name !== undefined) updateData.name = data.name;
     if (data.description !== undefined) updateData.description = data.description;
     if (data.maskRegions !== undefined) {
-      updateData.maskRegions = data.maskRegions;
-      updateData.fileSlotCount = Math.max(2, ...data.maskRegions.map(r => r.fileSlot));
+      updateData.mask_regions = data.maskRegions;
+      updateData.file_slot_count = Math.max(2, ...data.maskRegions.map(r => r.fileSlot));
     }
     if (data.dpi !== undefined) updateData.dpi = data.dpi;
-    if (data.matchMode !== undefined) updateData.matchMode = data.matchMode;
-    if (data.fileSlotCount !== undefined) updateData.fileSlotCount = data.fileSlotCount;
+    if (data.matchMode !== undefined) updateData.match_mode = data.matchMode;
+    if (data.fileSlotCount !== undefined) updateData.file_slot_count = data.fileSlotCount;
 
-    const [template] = await db.update(templates).set(updateData).where(eq(templates.id, id)).returning();
-    return template;
+    const { data: row, error } = await supabase.from("templates").update(updateData).eq("id", id).select().maybeSingle();
+    if (error) throw error;
+    return row ? toTemplate(row) : undefined;
   }
 
   async deleteTemplate(id: string): Promise<void> {
-    await db.delete(templates).where(eq(templates.id, id));
+    const { error } = await supabase.from("templates").delete().eq("id", id);
+    if (error) throw error;
   }
 
   async getVerifications(userId: string): Promise<Verification[]> {
-    return db.select().from(verifications).where(eq(verifications.userId, userId)).orderBy(desc(verifications.createdAt));
+    const { data, error } = await supabase.from("verifications").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map(toVerification);
   }
 
   async getVerification(id: string): Promise<Verification | undefined> {
-    const [verification] = await db.select().from(verifications).where(eq(verifications.id, id));
-    return verification;
+    const { data, error } = await supabase.from("verifications").select("*").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data ? toVerification(data) : undefined;
   }
 
   async createVerification(data: {
@@ -159,16 +234,17 @@ export class DatabaseStorage implements IStorage {
     file2Name: string;
     fileNames?: Record<string, string>;
   }): Promise<Verification> {
-    const [verification] = await db.insert(verifications).values({
-      templateId: data.templateId,
-      userId: data.userId,
-      confidenceScore: data.confidenceScore,
+    const { data: row, error } = await supabase.from("verifications").insert({
+      template_id: data.templateId,
+      user_id: data.userId,
+      confidence_score: data.confidenceScore,
       results: data.results,
-      file1Name: data.file1Name,
-      file2Name: data.file2Name,
-      fileNames: data.fileNames,
-    }).returning();
-    return verification;
+      file1_name: data.file1Name,
+      file2_name: data.file2Name,
+      file_names: data.fileNames ?? null,
+    }).select().single();
+    if (error) throw error;
+    return toVerification(row);
   }
 }
 
