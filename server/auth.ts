@@ -5,7 +5,7 @@ import { storage } from "./storage";
 import type { Express, Request } from "express";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
-import connectPgSimple from "connect-pg-simple";
+import MemoryStore from "memorystore";
 import { v4 as uuidv4 } from "uuid";
 
 const scryptAsync = promisify(scrypt);
@@ -23,16 +23,11 @@ async function comparePasswords(supplied: string, stored: string): Promise<boole
 }
 
 export function setupAuth(app: Express) {
-  const PgStore = connectPgSimple(session);
-
-  const sessionStore = new PgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: true,
-  });
+  const SessionStore = MemoryStore(session);
 
   app.use(
     session({
-      store: sessionStore,
+      store: new SessionStore({ checkPeriod: 86400000 }),
       secret: process.env.SESSION_SECRET || "sig-verify-secret-key",
       resave: false,
       saveUninitialized: false,
